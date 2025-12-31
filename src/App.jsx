@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Search,
   BarChart3,
@@ -15,7 +15,17 @@ import {
   User,
   Users,
   Briefcase,
-  Quote
+  Quote,
+  Trophy,
+  List,
+  ShieldCheck,
+  Building2,
+  ExternalLink,
+  Sparkles,
+  RefreshCw,
+  Send,
+  MessageSquare,
+  Zap
 } from 'lucide-react';
 import {
   BarChart,
@@ -34,6 +44,7 @@ import {
 // API Configuration
 const DATASET_ID = 'naix-2893';
 const BASE_URL = `https://data.texas.gov/resource/${DATASET_ID}.json`;
+const apiKey = ""; // Environment provided key
 
 const DATE_FIELD = 'obligation_end_date_yyyymmdd';
 const TOTAL_FIELD = 'total_receipts';
@@ -50,21 +61,23 @@ const VENUE_TYPES = {
   no_food: { label: 'No Food (Alcohol Only)', foodPct: 0.00, alcoholPct: 1.00, desc: '100% Alcohol receipts' },
 };
 
-const KNOWN_OWNERS = {
-  "32082902571": ["Travis Tober", "Zane Hunt", "Brandon Hunt", "Craig Primozich"],
-  "32061511302": ["Travis Tober", "Zane Hunt", "Brandon Hunt", "Craig Primozich"],
-  "32069462136": ["Travis Tober", "Zane Hunt", "Brandon Hunt", "Craig Primozich"],
-};
-
 const App = () => {
+  const [viewMode, setViewMode] = useState('search');
   const [searchTerm, setSearchTerm] = useState('');
   const [cityFilter, setCityFilter] = useState('');
+  const [topCitySearch, setTopCitySearch] = useState('');
   const [results, setResults] = useState([]);
+  const [topAccounts, setTopAccounts] = useState([]);
   const [selectedEstablishment, setSelectedEstablishment] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [hasSearched, setHasSearched] = useState(false);
   const [venueType, setVenueType] = useState('casual_dining');
+ 
+  // AI State
+  const [aiQuestion, setAiQuestion] = useState('');
+  const [aiResponse, setAiResponse] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const scrollRef = useRef(null);
 
   const formatCurrency = (val) => {
     const num = parseFloat(val);
@@ -78,14 +91,50 @@ const App = () => {
     return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   };
 
+  const handleAiAsk = async (e) => {
+    if (e) e.preventDefault();
+    if (!aiQuestion.trim() || !selectedEstablishment) return;
+
+    const businessName = selectedEstablishment.info.location_name;
+    const currentQuestion = aiQuestion;
+   
+    setAiLoading(true);
+    setAiResponse(null);
+    setAiQuestion(''); // Clear input
+
+    const userQuery = `Regarding the Texas business "${businessName}": ${currentQuestion}`;
+    const systemPrompt = "You are a specialized business intelligence analyst for the Texas hospitality industry. Provide concise, factual, and professional insights. If the question is about ownership, provide the most likely individuals or parent companies. Use bullet points for clarity if needed.";
+
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: userQuery }] }],
+          systemInstruction: { parts: [{ text: systemPrompt }] }
+        })
+      });
+
+      if (!response.ok) throw new Error('AI API Error');
+
+      const result = await response.json();
+      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+      setAiResponse({ question: currentQuestion, answer: text });
+    } catch (err) {
+      setAiResponse({ question: currentQuestion, answer: "Intelligence lookup failed. Please try again." });
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!searchTerm.trim()) return;
 
     setLoading(true);
     setError(null);
-    setHasSearched(true);
     setSelectedEstablishment(null);
+    setAiResponse(null);
     setResults([]);
 
     try {
@@ -114,7 +163,45 @@ const App = () => {
       });
       setResults(uniqueSpots);
     } catch (err) {
-      setError("Search failed. Please try again.");
+      setError("Search failed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleTopAccountsSearch = async (e) => {
+    if (e) e.preventDefault();
+    if (!topCitySearch.trim()) return;
+
+    setLoading(true);
+    setError(null);
+    setTopAccounts([]);
+
+    try {
+      const city = topCitySearch.trim().toUpperCase();
+      const oneYearAgo = new Date();
+      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+      const dateString = oneYearAgo.toISOString().split('T')[0] + "T00:00:00.000";
+
+      const query = `?$select=location_name, location_address, location_city, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
+                    `&$where=upper(location_city) = '${city}' AND ${DATE_FIELD} > '${dateString}'` +
+                    `&$group=location_name, location_address, location_city, taxpayer_number, location_number` +
+                    `&$order=annual_sales DESC` +
+                    `&$limit=100`;
+
+      const response = await fetch(BASE_URL + query);
+      const data = await response.json();
+     
+      if (!response.ok) throw new Error(data.message || 'Failed to fetch ranking');
+     
+      const processedData = data.map(account => ({
+        ...account,
+        avg_monthly_volume: parseFloat(account.annual_sales) / (parseInt(account.months_count) || 12)
+      }));
+
+      setTopAccounts(processedData);
+    } catch (err) {
+      setError("Failed to fetch top accounts.");
     } finally {
       setLoading(false);
     }
@@ -123,6 +210,9 @@ const App = () => {
   const analyzeLocation = async (establishment) => {
     setLoading(true);
     setError(null);
+    setViewMode('search');
+    setAiResponse(null);
+   
     try {
       const whereClause = `taxpayer_number = '${establishment.taxpayer_number}' AND location_number = '${establishment.location_number}'`;
       const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=12`;
@@ -135,6 +225,12 @@ const App = () => {
         info: establishment,
         history: history.reverse()
       });
+
+      // Optional: Auto-fetch initial ownership on select
+      setAiQuestion("Who is the owner or founder of this business?");
+      // Small timeout to allow state to settle before trigger
+      setTimeout(() => document.getElementById('ai-submit-btn')?.click(), 100);
+
     } catch (err) {
       setError(err.message);
     } finally {
@@ -155,340 +251,353 @@ const App = () => {
         estimatedFoodAvg = (averageAlcohol / config.alcoholPct) * config.foodPct;
     }
    
-    const estimatedTotalAvg = averageAlcohol + estimatedFoodAvg;
-    const individualOwners = KNOWN_OWNERS[selectedEstablishment.info.taxpayer_number] || [];
-
     return {
       averageAlcohol,
       estimatedFoodAvg,
-      estimatedTotalAvg,
+      estimatedTotalAvg: averageAlcohol + estimatedFoodAvg,
       nonZeroCount: nonZeroMonths.length,
-      config,
-      individualOwners
+      config
     };
   }, [selectedEstablishment, venueType]);
 
   const pieData = useMemo(() => {
     if (!stats) return [];
-    const data = [{ name: 'Alcohol', value: stats.averageAlcohol, color: '#A5B4FC' }];
-    if (stats.estimatedFoodAvg > 0) {
-      data.push({ name: 'Food', value: stats.estimatedFoodAvg, color: '#6EE7B7' });
-    }
-    return data;
+    return [
+      { name: 'Alcohol', value: stats.averageAlcohol, color: '#A5B4FC' },
+      { name: 'Food', value: stats.estimatedFoodAvg, color: '#6EE7B7' }
+    ];
   }, [stats]);
 
   return (
     <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans p-4 md:p-8">
-      {/* Bible Verse Header */}
-      <div className="max-w-6xl mx-auto mb-8 bg-[#1E293B] p-6 rounded-2xl border border-slate-700/50 shadow-xl">
-        <div className="flex gap-4 items-start">
-          <Quote className="text-indigo-400 shrink-0" size={24} />
+      <header className="max-w-6xl mx-auto mb-10">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div>
-            <h4 className="text-indigo-300 font-bold text-sm mb-1 uppercase tracking-widest">2 Corinthians 8:9</h4>
-            <p className="text-slate-300 text-lg italic leading-relaxed font-serif">
-              "For you know the grace of our Lord Jesus Christ, that though he was rich, yet for your sake he became poor, so that you through his poverty might become rich."
-            </p>
-            <p className="mt-2 text-slate-400 text-sm font-medium">Jesus' sacrifice is the ultimate expression of grace.</p>
+            <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tighter italic">
+              <BarChart3 className="text-indigo-400" size={36} /> RESTAURANT SCRAPER
+            </h1>
+            <p className="text-slate-400 font-medium uppercase tracking-widest text-[10px]">TX Comptroller Data Access 2.0</p>
           </div>
-        </div>
-      </div>
-
-      {/* Main Header */}
-      <header className="max-w-6xl mx-auto mb-10 flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tighter italic">
-            <BarChart3 className="text-indigo-400" size={36} /> RESTAURANT SCRAPER
-          </h1>
-          <p className="text-slate-400 font-medium text-sm md:text-base">Industry Intelligence & TABC Ownership Analytics</p>
+          <div className="flex bg-[#1E293B] p-1.5 rounded-2xl border border-slate-700 w-fit">
+            <button
+              onClick={() => setViewMode('search')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-black transition-all ${viewMode === 'search' ? 'bg-indigo-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}
+            >
+              <Search size={16} /> Search
+            </button>
+            <button
+              onClick={() => setViewMode('top')}
+              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-black transition-all ${viewMode === 'top' ? 'bg-indigo-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}
+            >
+              <Trophy size={16} /> Rankings
+            </button>
+          </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-       
-        {/* Left Column: Search */}
+        {/* Sidebar */}
         <div className="lg:col-span-4 space-y-6">
           <section className="bg-[#1E293B] p-6 rounded-3xl border border-slate-700 shadow-xl">
-            <form onSubmit={handleSearch} className="space-y-4">
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-widest text-indigo-300 block mb-2 px-1">Establishment Name</label>
-                <div className="relative">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input
-                    type="text"
-                    placeholder="e.g. Nickel City"
-                    className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                  />
+            {viewMode === 'search' ? (
+              <form onSubmit={handleSearch} className="space-y-4">
+                <h3 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2">Establishment Lookup</h3>
+                <div className="space-y-3">
+                  <div className="relative">
+                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                    <input
+                      type="text"
+                      placeholder="Name (e.g. Dos Salsas)"
+                      className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                    />
+                  </div>
+                  <div className="relative">
+                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                    <input
+                      type="text"
+                      placeholder="City (Optional)"
+                      className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
+                      value={cityFilter}
+                      onChange={(e) => setCityFilter(e.target.value)}
+                    />
+                  </div>
                 </div>
-              </div>
-              <div>
-                <label className="text-[10px] font-bold uppercase tracking-widest text-indigo-300 block mb-2 px-1">City</label>
+                <button
+                  type="submit"
+                  disabled={loading || !searchTerm.trim()}
+                  className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-900 font-black py-4 rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
+                >
+                  {loading ? <Loader2 className="animate-spin" /> : 'Run Scraper'}
+                </button>
+              </form>
+            ) : (
+              <form onSubmit={handleTopAccountsSearch} className="space-y-4">
+                <h3 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2">City Leaderboard</h3>
                 <div className="relative">
                   <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                   <input
                     type="text"
-                    placeholder="e.g. Fort Worth"
-                    className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white placeholder-slate-600 focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
-                    value={cityFilter}
-                    onChange={(e) => setCityFilter(e.target.value)}
+                    placeholder="Enter Texas City"
+                    className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
+                    value={topCitySearch}
+                    onChange={(e) => setTopCitySearch(e.target.value)}
                   />
                 </div>
-              </div>
-              <button
-                type="submit"
-                disabled={loading || !searchTerm.trim()}
-                className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-900 font-black py-4 rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 disabled:opacity-50 uppercase tracking-widest text-sm"
-              >
-                {loading ? <Loader2 className="animate-spin" /> : 'Run Scraper'}
-              </button>
-            </form>
+                <button
+                  type="submit"
+                  disabled={loading || !topCitySearch.trim()}
+                  className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-black py-4 rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
+                >
+                  {loading ? <Loader2 className="animate-spin" /> : 'Fetch Top 100'}
+                </button>
+              </form>
+            )}
           </section>
 
-          {results.length > 0 && (
+          {viewMode === 'search' && results.length > 0 && (
             <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-              <h3 className="text-[10px] font-black text-slate-500 uppercase px-4 tracking-[0.2em]">Verified Matches</h3>
+              <h3 className="text-[10px] font-black text-slate-500 uppercase px-4 tracking-[0.2em]">Matches</h3>
               {results.map((item) => (
                 <button
                   key={`${item.taxpayer_number}-${item.location_number}`}
                   onClick={() => analyzeLocation(item)}
                   className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${
                     selectedEstablishment?.info.location_number === item.location_number
-                    ? 'bg-indigo-500/10 border-indigo-500 shadow-[0_0_20px_rgba(99,102,241,0.1)]'
+                    ? 'bg-indigo-500/10 border-indigo-500'
                     : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'
                   }`}
                 >
                   <div className="overflow-hidden">
-                    <h4 className="font-black text-slate-100 group-hover:text-indigo-300 transition-colors uppercase tracking-tight truncate">{item.location_name}</h4>
-                    <p className="text-[11px] text-slate-400 mt-1 font-medium leading-tight">
-                      {item.location_address}, {item.location_city}, {item.location_zip}
+                    <h4 className="font-black text-slate-100 group-hover:text-indigo-300 transition-colors uppercase truncate">{item.location_name}</h4>
+                    <p className="text-[10px] text-slate-500 mt-1 uppercase font-bold tracking-tight truncate">
+                      {item.location_address}, {item.location_city}
                     </p>
                   </div>
-                  <ChevronRight size={18} className="text-slate-600 group-hover:text-indigo-400 shrink-0 ml-2" />
+                  <ChevronRight size={18} className="text-slate-600 shrink-0" />
                 </button>
               ))}
             </div>
           )}
         </div>
 
-        {/* Right Column: Dashboard */}
+        {/* Content Area */}
         <div className="lg:col-span-8">
-          {!selectedEstablishment && !loading && (
-            <div className="h-[400px] md:h-[600px] flex flex-col items-center justify-center bg-[#1E293B]/50 rounded-[2rem] border-2 border-dashed border-slate-700 text-slate-500 p-8 text-center shadow-inner">
-              <Briefcase size={48} className="mb-6 opacity-20" />
-              <h3 className="text-2xl font-black text-slate-400 italic">SYSTEM READY</h3>
-              <p className="max-w-xs mt-3 text-sm font-medium leading-relaxed opacity-60 uppercase tracking-widest">Execute search to populate revenue projections</p>
+          {viewMode === 'top' && topAccounts.length > 0 && (
+            <div className="bg-[#1E293B] rounded-[2rem] border border-slate-700 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
+              <div className="p-8 border-b border-slate-700 flex justify-between items-center bg-[#0F172A]/30">
+                <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase">Market Leaders: {topCitySearch}</h2>
+                <Trophy className="text-amber-400" size={32} />
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-[#0F172A]/50 text-[10px] uppercase font-black text-slate-500 tracking-widest">
+                    <tr>
+                      <th className="px-8 py-4">Rank</th>
+                      <th className="px-6 py-4">Name</th>
+                      <th className="px-6 py-4">Address</th>
+                      <th className="px-8 py-4 text-right">Avg Mo. Sales</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800">
+                    {topAccounts.map((account, index) => (
+                      <tr key={index} onClick={() => analyzeLocation(account)} className="hover:bg-indigo-500/5 transition-all cursor-pointer group">
+                        <td className="px-8 py-5">
+                          <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full font-black text-[10px] ${index < 3 ? 'bg-amber-400 text-slate-900' : 'bg-slate-800 text-slate-400'}`}>
+                            {index + 1}
+                          </span>
+                        </td>
+                        <td className="px-6 py-5 font-black text-slate-200 uppercase italic group-hover:text-indigo-400">{account.location_name}</td>
+                        <td className="px-6 py-5 text-slate-500 text-[10px] font-bold uppercase">{account.location_address}</td>
+                        <td className="px-8 py-5 font-black text-white text-right">{formatCurrency(account.avg_monthly_volume)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 
-          {loading && (
-             <div className="h-[400px] md:h-[600px] flex flex-col items-center justify-center">
-                <Loader2 className="animate-spin text-indigo-400 mb-6" size={64} />
-                <p className="text-indigo-300 font-black tracking-[0.3em] uppercase text-sm">Scraping Comptroller Data...</p>
-             </div>
-          )}
-
-          {selectedEstablishment && !loading && (
-            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-6 duration-700 pb-20">
-             
-              {/* Profile Card */}
-              <div className="bg-[#1E293B] p-6 md:p-10 rounded-[2rem] shadow-2xl border border-slate-700 relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-10 opacity-5 pointer-events-none hidden md:block">
-                  <BarChart3 size={200} />
-                </div>
-               
-                <div className="flex flex-col md:flex-row md:items-start justify-between gap-8 relative z-10">
+          {viewMode === 'search' && selectedEstablishment && (
+            <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-20">
+              {/* Header Card */}
+              <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2rem] border border-slate-700 shadow-2xl relative overflow-hidden">
+                <div className="flex flex-col md:flex-row justify-between gap-8 relative z-10">
                   <div className="space-y-6 flex-1">
                     <div>
-                      <span className="inline-block px-4 py-1.5 bg-indigo-500/10 text-indigo-300 rounded-full text-[10px] font-black mb-4 uppercase tracking-[0.2em] border border-indigo-500/20">
-                        Permit {selectedEstablishment.info.tabc_permit_number}
+                      <span className="inline-block px-4 py-1.5 bg-indigo-500/10 text-indigo-400 rounded-full text-[10px] font-black mb-4 uppercase tracking-[0.2em] border border-indigo-500/20">
+                        {selectedEstablishment.info.tabc_permit_number || 'TABC ACTIVE'}
                       </span>
-                      <h2 className="text-3xl md:text-5xl font-black text-white leading-[0.9] tracking-tighter uppercase italic">{selectedEstablishment.info.location_name}</h2>
-                      <p className="text-slate-400 flex items-center gap-2 mt-4 text-sm font-bold tracking-wide">
-                        <MapPin size={18} className="text-indigo-400 shrink-0" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}, TX
+                      <h2 className="text-3xl md:text-5xl font-black text-white tracking-tighter uppercase italic">{selectedEstablishment.info.location_name}</h2>
+                      <p className="text-slate-400 flex items-center gap-2 mt-4 text-sm font-bold uppercase tracking-wide">
+                        <MapPin size={18} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}, TX
                       </p>
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-8 border-t border-slate-700/50">
-                      <div>
-                        <div className="flex items-center gap-2 text-indigo-300/60 mb-3">
-                          <Briefcase size={16} />
-                          <span className="text-[10px] font-black uppercase tracking-[0.2em]">Parent Entity</span>
+                      {/* Entity Card */}
+                      <div className="bg-[#0F172A]/40 p-6 rounded-[1.5rem] border border-slate-700">
+                        <div className="flex items-center gap-2 text-indigo-400 mb-3">
+                          <Building2 size={16} />
+                          <span className="text-[9px] font-black uppercase tracking-widest">Parent Entity</span>
                         </div>
-                        <p className="font-black text-slate-100 text-lg md:text-xl leading-tight uppercase tracking-tight">{selectedEstablishment.info.taxpayer_name}</p>
-                        <p className="text-[11px] text-slate-500 font-mono mt-2 uppercase tracking-widest">FEIN: {selectedEstablishment.info.taxpayer_number}</p>
+                        <p className="font-black text-slate-100 text-lg uppercase leading-tight">{selectedEstablishment.info.taxpayer_name}</p>
+                        <div className="mt-4 flex items-center justify-between opacity-60">
+                          <p className="text-[9px] font-mono tracking-widest">ID: {selectedEstablishment.info.taxpayer_number}</p>
+                          <ExternalLink size={14} />
+                        </div>
                       </div>
-                     
-                      <div className="bg-[#0F172A] p-5 rounded-3xl border border-slate-700/50 shadow-inner">
-                        <div className="flex items-center gap-2 text-emerald-400/80 mb-3">
-                          <Users size={16} />
-                          <span className="text-[10px] font-black uppercase tracking-[0.2em]">Key Officers</span>
-                        </div>
-                        {stats.individualOwners.length > 0 ? (
-                          <div className="space-y-2">
-                            {stats.individualOwners.map(owner => (
-                              <p key={owner} className="text-base md:text-lg font-black text-slate-100 italic tracking-tighter uppercase">{owner}</p>
-                            ))}
+
+                      {/* ASK AI Card (Replacement Section) */}
+                      <div className="bg-gradient-to-br from-indigo-500/10 to-transparent p-6 rounded-[1.5rem] border border-indigo-500/30 shadow-xl relative group">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-2 text-indigo-300">
+                            <Sparkles size={16} />
+                            <span className="text-[9px] font-black uppercase tracking-widest">Intelligence Portal</span>
                           </div>
-                        ) : (
-                          <p className="text-xs font-bold text-slate-600 uppercase italic">Ownership indexing unavailable</p>
-                        )}
+                          {aiLoading && <Loader2 size={14} className="animate-spin text-indigo-400" />}
+                        </div>
+                       
+                        <div className="space-y-4">
+                          {aiResponse && (
+                            <div className="max-h-[120px] overflow-y-auto pr-2 custom-scrollbar animate-in fade-in slide-in-from-top-2 duration-300">
+                              <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1 italic">Answer:</p>
+                              <p className="text-xs font-medium text-slate-300 leading-relaxed">
+                                {aiResponse.answer}
+                              </p>
+                            </div>
+                          )}
+
+                          {!aiResponse && !aiLoading && (
+                            <p className="text-xs text-slate-500 italic mb-2">Ask about ownership, history, or operations...</p>
+                          )}
+
+                          <form onSubmit={handleAiAsk} className="relative flex items-center">
+                            <input
+                              type="text"
+                              value={aiQuestion}
+                              onChange={(e) => setAiQuestion(e.target.value)}
+                              placeholder="Ask anything about this business..."
+                              className="w-full bg-[#0F172A] border border-slate-700 rounded-xl px-4 py-2.5 text-xs text-white placeholder-slate-600 focus:ring-1 focus:ring-indigo-500 outline-none pr-10"
+                            />
+                            <button
+                              id="ai-submit-btn"
+                              type="submit"
+                              disabled={aiLoading || !aiQuestion.trim()}
+                              className="absolute right-2 p-1.5 text-indigo-400 hover:text-indigo-300 disabled:opacity-30 transition-colors"
+                            >
+                              <Send size={14} />
+                            </button>
+                          </form>
+                        </div>
                       </div>
                     </div>
                   </div>
-                 
-                  <div className="bg-white p-6 md:p-8 rounded-[2rem] md:rounded-[2.5rem] text-center md:text-right text-slate-900 shadow-[0_20px_50px_rgba(99,102,241,0.3)] min-w-full md:min-w-[280px] flex flex-col justify-center border-b-8 border-indigo-400">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">Avg Monthly Volume</p>
+
+                  <div className="bg-white p-8 rounded-[2rem] text-center md:text-right text-slate-900 shadow-2xl min-w-full md:min-w-[260px] flex flex-col justify-center border-b-8 border-indigo-400">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Estimated Avg. Revenue</p>
                     <p className="text-4xl md:text-5xl font-black tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
-                    <p className="text-[10px] mt-4 font-black text-indigo-500 uppercase tracking-widest">Based on {stats.nonZeroCount} Active Months</p>
+                    <p className="text-[9px] mt-4 font-black text-indigo-500 uppercase tracking-widest">Monthly Projection</p>
                   </div>
                 </div>
               </div>
 
-              {/* Estimation Engine - High Contrast Pastel Theme */}
-              <div className="bg-[#1E293B] p-6 md:p-8 rounded-[2rem] shadow-xl border border-slate-700">
-                <div className="flex items-center gap-4 mb-8">
-                  <div className="p-3 bg-indigo-500 text-white rounded-2xl shadow-lg"><Utensils size={24} /></div>
-                  <div>
-                    <h3 className="text-xl font-black text-white uppercase italic tracking-tight leading-none">Projection Engine</h3>
-                    <p className="text-xs text-slate-500 font-bold mt-1 uppercase tracking-widest">Alcohol vs. Food Projection</p>
+              {/* Projections & Charts */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 flex flex-col">
+                  <div className="flex items-center gap-3 mb-8">
+                    <Utensils className="text-indigo-400" />
+                    <h3 className="text-sm font-black uppercase italic tracking-widest">Projection Model</h3>
                   </div>
-                </div>
-               
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-                  <div className="space-y-8">
+                 
+                  <div className="space-y-6 flex-1">
                     <div>
-                      <label className="text-[10px] font-black uppercase text-indigo-300 block mb-3 tracking-[0.2em] px-1">Revenue Model</label>
+                      <label className="text-[9px] font-black uppercase text-slate-500 block mb-3 tracking-widest">Establishment Type</label>
                       <select
-                        className="w-full bg-[#0F172A] border border-slate-600 rounded-2xl px-5 py-4 text-sm font-black text-slate-100 focus:ring-2 focus:ring-indigo-500 outline-none transition-all cursor-pointer shadow-inner uppercase italic tracking-wide appearance-none"
+                        className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl px-5 py-4 text-xs font-black text-slate-200 outline-none uppercase italic"
                         value={venueType}
                         onChange={(e) => setVenueType(e.target.value)}
                       >
                         {Object.entries(VENUE_TYPES).map(([key, val]) => (
-                          <option key={key} value={key}>
-                            {val.label}
-                          </option>
+                          <option key={key} value={key}>{val.label}</option>
                         ))}
                       </select>
-                      <p className="text-sm text-indigo-200 mt-4 font-bold italic border-l-4 border-indigo-400/50 pl-4">{stats.config.desc}</p>
+                      <p className="text-[11px] text-indigo-300 mt-4 font-bold italic opacity-80">{stats.config.desc}</p>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="bg-[#0F172A] p-6 rounded-3xl border border-slate-700">
-                        <p className="text-[10px] font-black text-indigo-300/70 uppercase tracking-widest mb-2">Avg Alcohol (Actual)</p>
-                        <p className="text-2xl font-black text-indigo-300 italic tracking-tighter">{formatCurrency(stats.averageAlcohol)}</p>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
+                        <p className="text-[9px] font-black text-indigo-400 uppercase mb-1">Alcohol</p>
+                        <p className="text-xl font-black text-white italic">{formatCurrency(stats.averageAlcohol)}</p>
                       </div>
-                      <div className="bg-[#0F172A] p-6 rounded-3xl border border-slate-700">
-                        <p className="text-[10px] font-black text-emerald-300/70 uppercase tracking-widest mb-2">Avg Food (Projected)</p>
-                        <p className="text-2xl font-black text-emerald-300 italic tracking-tighter">{formatCurrency(stats.estimatedFoodAvg)}</p>
+                      <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
+                        <p className="text-[9px] font-black text-emerald-400 uppercase mb-1">Food (Est)</p>
+                        <p className="text-xl font-black text-white italic">{formatCurrency(stats.estimatedFoodAvg)}</p>
                       </div>
-                    </div>
-                  </div>
-
-                  <div className="h-[250px] md:h-[300px] w-full flex items-center justify-center relative">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={pieData}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={window.innerWidth < 768 ? 60 : 75}
-                          outerRadius={window.innerWidth < 768 ? 85 : 105}
-                          paddingAngle={8}
-                          dataKey="value"
-                        >
-                          {pieData.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={entry.color} strokeWidth={0} />
-                          ))}
-                        </Pie>
-                        <Tooltip
-                          contentStyle={{backgroundColor: '#1E293B', borderRadius: '16px', border: '1px solid #334155', fontWeight: 'bold'}}
-                          itemStyle={{color: '#F1F5F9'}}
-                        />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                       <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Avg Total</span>
-                       <span className="text-2xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</span>
                     </div>
                   </div>
                 </div>
-               
-                {/* Visual Legend for Mobile */}
-                <div className="mt-8 flex flex-wrap justify-center gap-6 border-t border-slate-700/50 pt-6">
-                   <div className="flex items-center gap-2">
-                     <div className="w-3 h-3 rounded-full bg-[#A5B4FC]"></div>
-                     <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Alcohol (Actual)</span>
-                   </div>
-                   <div className="flex items-center gap-2">
-                     <div className="w-3 h-3 rounded-full bg-[#6EE7B7]"></div>
-                     <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Food (Projected)</span>
-                   </div>
+
+                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 h-[350px] flex flex-col items-center justify-center relative">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={pieData}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={70}
+                        outerRadius={95}
+                        paddingAngle={5}
+                        dataKey="value"
+                      >
+                        {pieData.map((entry, index) => <Cell key={index} fill={entry.color} strokeWidth={0} />)}
+                      </Pie>
+                      <Tooltip
+                        contentStyle={{backgroundColor: '#0F172A', borderRadius: '12px', border: '1px solid #334155', fontSize: '12px'}}
+                      />
+                    </PieChart>
+                  </ResponsiveContainer>
+                  <div className="absolute flex flex-col items-center pointer-events-none">
+                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Revenue Mix</span>
+                    <span className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</span>
+                  </div>
                 </div>
               </div>
 
-              {/* Performance Chart */}
-              <div className="bg-[#1E293B] p-6 md:p-8 rounded-[2rem] shadow-xl border border-slate-700">
-                <div className="flex items-center justify-between mb-10">
-                   <h3 className="text-lg md:text-xl font-black text-white uppercase italic tracking-tighter leading-none">Historical Alcohol Trajectory</h3>
-                </div>
-                <div className="h-[300px] md:h-[400px] w-full">
+              {/* History Bar Chart */}
+              <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-xl">
+                <h3 className="text-sm font-black text-white uppercase italic tracking-widest mb-10">Alcohol Sales Volume (Last 12 Months)</h3>
+                <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart data={selectedEstablishment.history} margin={{top: 10, right: 10, left: -20, bottom: 0}}>
-                      <CartesianGrid strokeDasharray="6 6" vertical={false} stroke="#334155" />
-                      <XAxis
-                        dataKey={DATE_FIELD}
-                        tickFormatter={formatDate}
-                        tick={{fontSize: 10, fill: '#64748b', fontWeight: 'bold'}}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <YAxis
-                        tickFormatter={(v) => `$${v >= 1000 ? (v/1000).toFixed(0) + 'k' : v}`}
-                        tick={{fontSize: 10, fill: '#64748b', fontWeight: 'bold'}}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <Tooltip
-                        cursor={{fill: 'rgba(255,255,255,0.03)'}}
-                        contentStyle={{backgroundColor: '#0F172A', borderRadius: '16px', border: '1px solid #334155', padding: '15px'}}
-                      />
-                      <Legend verticalAlign="top" align="right" iconType="circle" height={50} wrapperStyle={{paddingBottom: '20px', fontSize: '10px', fontWeight: 'bold', textTransform: 'uppercase'}}/>
+                      <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#334155" />
+                      <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 9, fill: '#64748b', fontWeight: 'bold'}} axisLine={false} tickLine={false} />
+                      <YAxis tickFormatter={(v) => `$${v >= 1000 ? (v/1000).toFixed(0) + 'k' : v}`} tick={{fontSize: 9, fill: '#64748b', fontWeight: 'bold'}} axisLine={false} tickLine={false} />
+                      <Tooltip contentStyle={{backgroundColor: '#0F172A', borderRadius: '12px', border: '1px solid #334155'}} />
+                      <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{paddingBottom: '20px', fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold'}} />
                       <Bar name="Liquor" dataKey="liquor_receipts" stackId="a" fill="#A5B4FC" />
                       <Bar name="Wine" dataKey="wine_receipts" stackId="a" fill="#F9A8D4" />
-                      <Bar name="Beer" dataKey="beer_receipts" stackId="a" fill="#FDE047" radius={[6, 6, 0, 0]} />
+                      <Bar name="Beer" dataKey="beer_receipts" stackId="a" fill="#FDE047" radius={[4, 4, 0, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               </div>
-
-              {/* Data Table */}
-              <div className="bg-[#1E293B] rounded-[2rem] shadow-xl border border-slate-700 overflow-hidden">
-                <div className="overflow-x-auto scrollbar-hide">
-                  <table className="w-full text-left text-sm min-w-[700px]">
-                    <thead className="bg-[#0F172A] border-b border-slate-700">
-                      <tr>
-                        <th className="px-10 py-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">Tax Period</th>
-                        <th className="px-6 py-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">Liquor</th>
-                        <th className="px-6 py-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">Wine</th>
-                        <th className="px-6 py-6 font-black text-slate-500 uppercase tracking-widest text-[10px]">Beer</th>
-                        <th className="px-10 py-6 font-black text-slate-500 uppercase tracking-widest text-[10px] text-right">Net Sales</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-800">
-                      {[...selectedEstablishment.history].reverse().map((row, idx) => (
-                        <tr key={idx} className="hover:bg-indigo-500/5 transition-colors group">
-                          <td className="px-10 py-5 font-black text-slate-300 uppercase italic tracking-wider whitespace-nowrap">{formatDate(row[DATE_FIELD])}</td>
-                          <td className="px-6 py-5 text-slate-400 font-bold font-mono text-xs tracking-widest">{formatCurrency(row.liquor_receipts)}</td>
-                          <td className="px-6 py-5 text-slate-400 font-bold font-mono text-xs tracking-widest">{formatCurrency(row.wine_receipts)}</td>
-                          <td className="px-6 py-5 text-slate-400 font-bold font-mono text-xs tracking-widest">{formatCurrency(row.beer_receipts)}</td>
-                          <td className="px-10 py-5 font-black text-white text-right text-base font-mono group-hover:text-indigo-300 transition-colors">{formatCurrency(row[TOTAL_FIELD])}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+            </div>
+          )}
+         
+          {!selectedEstablishment && !loading && (
+            <div className="h-[500px] flex flex-col items-center justify-center bg-[#1E293B]/30 rounded-[2.5rem] border-2 border-dashed border-slate-800 text-slate-600 text-center p-10">
+              <Zap size={48} className="mb-6 opacity-20" />
+              <h3 className="text-xl font-black italic uppercase tracking-tighter">System Idle</h3>
+              <p className="max-w-xs mt-2 text-xs font-bold uppercase tracking-widest opacity-40">Search and select an establishment to initialize intelligence modules</p>
+            </div>
+          )}
+         
+          {loading && (
+            <div className="h-[500px] flex flex-col items-center justify-center">
+              <Loader2 className="animate-spin text-indigo-400 mb-4" size={48} />
+              <p className="text-indigo-300 font-black tracking-[0.3em] uppercase text-[10px]">Accessing TABC Cloud Records...</p>
             </div>
           )}
         </div>
