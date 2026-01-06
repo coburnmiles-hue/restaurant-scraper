@@ -48,25 +48,27 @@ const BASE_URL = `https://data.texas.gov/resource/${DATASET_ID}.json`;
 
 /**
  * API KEY HANDLING
- * Updated with provided key and safe environment checks.
+ * Updated with the new key provided and build-safe environment checks.
  */
 const getApiKey = () => {
-  // 1. Priority: Use the key provided in the chat
-  const providedKey = "AIzaSyBHeVeq7_fzYaDtn4OvgiZ1VOohcKToHLE";
+  // 1. Priority: User-provided key
+  const providedKey = "AIzaSyCYB2kYXzoLfNRlKI-opEfXDfThgvlaexU";
   if (providedKey && !providedKey.startsWith("YOUR_")) return providedKey;
 
-  // 2. Fallback: Check environment variables safely
+  // 2. Fallback: Safe Environment Check (prevents build warnings)
   try {
+    // Check standard process env
     if (typeof process !== 'undefined' && process.env?.REACT_APP_GEMINI_API_KEY) {
       return process.env.REACT_APP_GEMINI_API_KEY;
     }
-    // Accessing import.meta via a string check to prevent 'es2015' target build errors
-    const globalObj = typeof window !== 'undefined' ? window : globalThis;
-    if (globalObj.import?.meta?.env?.VITE_GEMINI_API_KEY) {
-      return globalObj.import.meta.env.VITE_GEMINI_API_KEY;
+    
+    // Use an indirect reference to bypass static analysis warnings for import.meta
+    const meta = (new Function('return import.meta'))();
+    if (meta?.env?.VITE_GEMINI_API_KEY) {
+      return meta.env.VITE_GEMINI_API_KEY;
     }
   } catch (e) {
-    // Silent fail for restricted environments
+    // Fail silently
   }
   return ""; 
 };
@@ -76,7 +78,6 @@ const apiKey = getApiKey();
 const DATE_FIELD = 'obligation_end_date_yyyymmdd';
 const TOTAL_FIELD = 'total_receipts';
 
-// Revenue split presets for food estimation
 const VENUE_TYPES = {
   fine_dining: { label: 'Fine Dining', foodPct: 0.75, alcoholPct: 0.25, desc: 'Premium food focus (75/25 split)' },
   upscale_casual: { label: 'Upscale Casual', foodPct: 0.65, alcoholPct: 0.35, desc: 'Polished dining (65/35 split)' },
@@ -100,7 +101,6 @@ const App = () => {
   const [error, setError] = useState(null);
   const [venueType, setVenueType] = useState('casual_dining');
   
-  // AI State
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [groundingSources, setGroundingSources] = useState([]);
@@ -126,7 +126,6 @@ const App = () => {
     setGroundingSources([]);
 
     const userQuery = `Search for the Texas business "${businessName}" in ${city}. Who owns this business (founders or parent company) and how many locations do they currently have in total?`;
-    
     const systemPrompt = "You are a professional business intelligence researcher. Your goal is to provide specific ownership details and location counts. Synthesize sources and prioritize listing names of individual owners/founders. Always state the total location count if found.";
 
     const fetchWithRetry = async (url, options, retries = 5, backoff = 1000) => {
@@ -145,7 +144,7 @@ const App = () => {
 
     try {
       if (!apiKey) {
-        setAiResponse("AI Lookup is disabled because no Gemini API key was found.");
+        setAiResponse("AI Insight module skipped: No API Key detected.");
         setAiLoading(false);
         return;
       }
@@ -166,10 +165,10 @@ const App = () => {
         title: a.web?.title 
       })) || [];
 
-      setAiResponse(text || "No ownership data found for this specific location.");
+      setAiResponse(text || "No ownership data found.");
       setGroundingSources(sources);
     } catch (err) {
-      setAiResponse("Intelligence lookup failed. Please check your network connection and API key permissions.");
+      setAiResponse("Lookup failed. Please verify API key status.");
     } finally {
       setAiLoading(false);
     }
@@ -198,7 +197,7 @@ const App = () => {
       const response = await fetch(BASE_URL + query);
       const data = await response.json();
       
-      if (!response.ok) throw new Error(data.message || 'Failed to fetch data');
+      if (!response.ok) throw new Error(data.message || 'Fetch failed');
       
       const uniqueSpots = [];
       const seen = new Set();
@@ -240,7 +239,7 @@ const App = () => {
       const response = await fetch(BASE_URL + query);
       const data = await response.json();
       
-      if (!response.ok) throw new Error(data.message || 'Failed to fetch ranking');
+      if (!response.ok) throw new Error(data.message || 'Fetch failed');
       
       const processedData = data.map(account => ({
         ...account,
@@ -268,7 +267,7 @@ const App = () => {
       
       const response = await fetch(BASE_URL + query);
       const history = await response.json();
-      if (!response.ok) throw new Error("Failed to load historical data.");
+      if (!response.ok) throw new Error("Failed to load history.");
 
       const newSelection = {
         info: establishment,
@@ -277,7 +276,6 @@ const App = () => {
       
       setSelectedEstablishment(newSelection);
       performIntelligenceLookup(establishment);
-
     } catch (err) {
       setError(err.message);
     } finally {
@@ -343,7 +341,6 @@ const App = () => {
       </header>
 
       <main className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Sidebar */}
         <div className="lg:col-span-4 space-y-6">
           <section className="bg-[#1E293B] p-6 rounded-3xl border border-slate-700 shadow-xl">
             {viewMode === 'search' ? (
@@ -429,7 +426,6 @@ const App = () => {
           )}
         </div>
 
-        {/* Content Area */}
         <div className="lg:col-span-8">
           {viewMode === 'top' && topAccounts.length > 0 && (
             <div className="bg-[#1E293B] rounded-[2rem] border border-slate-700 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -468,7 +464,6 @@ const App = () => {
 
           {viewMode === 'search' && selectedEstablishment && (
             <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-20">
-              {/* Header Card */}
               <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2rem] border border-slate-700 shadow-2xl relative overflow-hidden">
                 <div className="flex flex-col md:flex-row justify-between gap-8 relative z-10">
                   <div className="space-y-6 flex-1">
@@ -483,7 +478,6 @@ const App = () => {
                     </div>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-8 border-t border-slate-700/50">
-                      {/* Entity Card */}
                       <div className="bg-[#0F172A]/40 p-6 rounded-[1.5rem] border border-slate-700">
                         <div className="flex items-center gap-2 text-indigo-400 mb-3">
                           <Building2 size={16} />
@@ -495,7 +489,6 @@ const App = () => {
                         </div>
                       </div>
 
-                      {/* Intelligence Card - Automated Report */}
                       <div className="bg-gradient-to-br from-indigo-500/10 to-transparent p-6 rounded-[1.5rem] border border-indigo-500/30 shadow-xl relative group min-h-[140px]">
                         <div className="flex items-center justify-between mb-4">
                           <div className="flex items-center gap-2 text-indigo-300">
@@ -546,7 +539,6 @@ const App = () => {
                 </div>
               </div>
 
-              {/* Projections & Charts */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 flex flex-col">
                   <div className="flex items-center gap-3 mb-8">
@@ -608,7 +600,6 @@ const App = () => {
                 </div>
               </div>
 
-              {/* History Bar Chart */}
               <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-xl">
                 <h3 className="text-sm font-black text-white uppercase italic tracking-widest mb-10">Alcohol Sales Volume (Last 12 Months)</h3>
                 <div className="h-[300px] w-full">
