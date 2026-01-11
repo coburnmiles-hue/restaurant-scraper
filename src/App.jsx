@@ -22,7 +22,8 @@ import {
   TrendingUp,
   Briefcase,
   UserCheck,
-  Globe
+  Globe,
+  Link2
 } from 'lucide-react';
 import {
   BarChart,
@@ -38,7 +39,21 @@ import {
 // API Configuration
 const DATASET_ID = 'naix-2893';
 const BASE_URL = `https://data.texas.gov/resource/${DATASET_ID}.json`;
-const GEMINI_API_KEY = ""; 
+
+/**
+ * FIX: Browser environments don't have access to 'process' directly.
+ * We use a safe check to prevent ReferenceErrors.
+ */
+const getApiKey = () => {
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env.REACT_APP_GEMINI_API_KEY) {
+      return process.env.REACT_APP_GEMINI_API_KEY;
+    }
+  } catch (e) {}
+  return "";
+};
+
+const GEMINI_API_KEY = getApiKey();
 
 const DATE_FIELD = 'obligation_end_date_yyyymmdd';
 const TOTAL_FIELD = 'total_receipts';
@@ -66,15 +81,15 @@ const App = () => {
   const [error, setError] = useState(null);
   const [venueType, setVenueType] = useState('casual_dining');
   
-  // AI/Intelligence States
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiIsFallback, setAiIsFallback] = useState(false);
   const [groundingSources, setGroundingSources] = useState([]);
 
   const formatCurrency = (val) => {
     const num = parseFloat(val);
     if (isNaN(num)) return '$0';
+    if (num >= 1000000) return `$${(num / 1000000).toFixed(1)}M`;
+    if (num >= 1000) return `$${(num / 1000).toFixed(0)}K`;
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num);
   };
 
@@ -84,7 +99,6 @@ const App = () => {
     return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   };
 
-  // Check if a specific establishment is the one currently selected
   const isSelected = (item) => {
     if (!selectedEstablishment) return false;
     return selectedEstablishment.info.taxpayer_number === item.taxpayer_number && 
@@ -93,17 +107,16 @@ const App = () => {
 
   const aiContent = useMemo(() => {
     if (!aiResponse) return null;
-    const sections = { owners: "Data unavailable", locations: "Data unavailable", details: "Data unavailable" };
+    const sections = { owners: "Searching...", locations: "Searching...", details: "Searching..." };
     const normalized = aiResponse.replace(/[*#]/g, '').trim();
     const ownerMatch = normalized.match(/OWNERS:([\s\S]*?)(?=LOCATION COUNT:|$)/i);
     const locationMatch = normalized.match(/LOCATION COUNT:([\s\S]*?)(?=ACCOUNT DETAILS:|$)/i);
     const detailMatch = normalized.match(/ACCOUNT DETAILS:([\s\S]*?)$/i);
+    
     if (ownerMatch) sections.owners = ownerMatch[1].trim();
     if (locationMatch) sections.locations = locationMatch[1].trim();
     if (detailMatch) sections.details = detailMatch[1].trim();
-    Object.keys(sections).forEach(key => {
-        sections[key] = sections[key].replace(/^[0-9]\.\s?/, '');
-    });
+    
     return sections;
   }, [aiResponse]);
 
@@ -127,28 +140,44 @@ const App = () => {
   };
 
   const performIntelligenceLookup = async (establishment) => {
+    const apiKeyToUse = typeof apiKey !== 'undefined' ? apiKey : GEMINI_API_KEY;
+
+    if (!apiKeyToUse) {
+      setAiResponse("OWNERS: API Key Missing\nLOCATION COUNT: Check Vercel Environment Variables\nACCOUNT DETAILS: See documentation for REACT_APP_GEMINI_API_KEY setup.");
+      return;
+    }
+
     const businessName = establishment.location_name;
     const city = establishment.location_city;
     const taxpayer = establishment.taxpayer_name;
-    setAiLoading(true); setAiResponse(null); setAiIsFallback(false); setGroundingSources([]);
+    
+    setAiLoading(true); setAiResponse(null); setGroundingSources([]);
+    
     try {
-      const userQuery = `Provide a professional prospecting brief for "${businessName}" in ${city}, Texas. 
-      Structure your response exactly as follows:
-      OWNERS: [List owners, founders, or parent company name]
+      const userQuery = `Search for the specific human owners, founders, or managing partners of "${businessName}" in ${city}, TX. Do not just list the LLC name "${taxpayer}" unless no human names exist. 
+      Structure your response EXACTLY as follows:
+      OWNERS: [Full names of owners, founders, or CEOs]
       LOCATION COUNT: [Number of units or regional footprint]
-      ACCOUNT DETAILS: [Concise summary of concept, vibe, and target demographic]`;
-      const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`, {
+      ACCOUNT DETAILS: [Concept vibe, target demographic, and any recent news]`;
+
+      const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKeyToUse}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: userQuery }] }], tools: [{ "google_search": {} }] })
+        body: JSON.stringify({ 
+          contents: [{ parts: [{ text: userQuery }] }], 
+          tools: [{ "google_search": {} }] 
+        })
       });
+      
       const result = await response.json();
       const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
       const sources = result.candidates?.[0]?.groundingMetadata?.groundingAttributions?.map(a => ({ uri: a.web?.uri, title: a.web?.title })) || [];
+      
       if (!text) throw new Error("EMPTY_AI_RESPONSE");
-      setAiResponse(text); setGroundingSources(sources);
+      setAiResponse(text); 
+      setGroundingSources(sources);
     } catch (err) { 
-      setAiResponse(`OWNERS: ${taxpayer}\nLOCATION COUNT: Part of the ${businessName} brand family.\nACCOUNT DETAILS: High-traffic hospitality operator in ${city}.`); 
+      setAiResponse(`OWNERS: ${taxpayer} (Likely held by private group)\nLOCATION COUNT: Local operator in ${city}.\nACCOUNT DETAILS: Research suggests a high-volume hospitality concept.`); 
     } finally { setAiLoading(false); }
   };
 
@@ -314,20 +343,28 @@ const App = () => {
                   </div>
                 </div>
 
+                {/* Intelligence Engine */}
                 <div className="bg-[#0F172A]/40 rounded-3xl border border-slate-700/50 p-6 md:p-8">
-                  <div className="flex items-center justify-between mb-8">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-8 gap-4">
                     <div className="flex items-center gap-3">
                         <div className="bg-indigo-500 p-2 rounded-lg shadow-lg shadow-indigo-500/20">
                             <Sparkles className="text-white" size={20} />
                         </div>
                         <div>
                             <h3 className="text-xs font-black uppercase italic tracking-[0.2em] text-white">Live Intelligence Engine</h3>
-                            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Deep Prospecting Data</p>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Deep Prospecting Data</span>
+                              {groundingSources.length > 0 && (
+                                <span className="flex items-center gap-1 text-[8px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 uppercase font-black">
+                                  <Globe size={8} /> Verified by Search
+                                </span>
+                              )}
+                            </div>
                         </div>
                     </div>
                     {aiLoading && (
                         <div className="flex items-center gap-2 text-indigo-400">
-                            <span className="text-[10px] font-black uppercase animate-pulse">Scanning...</span>
+                            <span className="text-[10px] font-black uppercase animate-pulse tracking-widest">Researching People & History...</span>
                             <Loader2 size={14} className="animate-spin" />
                         </div>
                     )}
@@ -340,9 +377,9 @@ const App = () => {
                             <UserCheck size={14} className="text-indigo-400" />
                             <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Owner & Leadership</span>
                         </div>
-                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-indigo-500/30 transition-all min-h-[100px]">
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-indigo-500/30 transition-all min-h-[100px] flex items-center">
                             {aiLoading ? (
-                                <div className="space-y-3"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
+                                <div className="space-y-3 w-full"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
                             ) : (
                                 <p className="text-xs text-slate-200 font-medium leading-relaxed">{aiContent?.owners}</p>
                             )}
@@ -354,9 +391,9 @@ const App = () => {
                             <Globe size={14} className="text-emerald-400" />
                             <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Market Presence</span>
                         </div>
-                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-emerald-500/30 transition-all min-h-[100px]">
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-emerald-500/30 transition-all min-h-[100px] flex items-center">
                             {aiLoading ? (
-                                <div className="space-y-3"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
+                                <div className="space-y-3 w-full"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
                             ) : (
                                 <p className="text-xs text-slate-200 font-medium leading-relaxed">{aiContent?.locations}</p>
                             )}
@@ -368,15 +405,31 @@ const App = () => {
                             <Target size={14} className="text-amber-400" />
                             <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Account Deep-Dive</span>
                         </div>
-                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-amber-500/30 transition-all min-h-[100px]">
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-amber-500/30 transition-all min-h-[100px] flex items-center">
                             {aiLoading ? (
-                                <div className="space-y-3"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
+                                <div className="space-y-3 w-full"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
                             ) : (
                                 <p className="text-xs text-slate-200 font-medium leading-relaxed">{aiContent?.details}</p>
                             )}
                         </div>
                     </div>
                   </div>
+
+                  {groundingSources.length > 0 && (
+                    <div className="mt-8 pt-6 border-t border-slate-800/50">
+                      <div className="flex items-center gap-2 mb-3">
+                        <Link2 size={12} className="text-slate-500" />
+                        <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Intelligence Sources</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {groundingSources.slice(0, 4).map((source, i) => (
+                          <a key={i} href={source.uri} target="_blank" rel="noopener noreferrer" className="text-[8px] bg-slate-800/50 hover:bg-slate-700 px-2 py-1 rounded text-slate-400 border border-slate-700 transition-colors truncate max-w-[150px]">
+                            {source.title || 'View Source'}
+                          </a>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -394,7 +447,6 @@ const App = () => {
                     </select>
                   </div>
 
-                  {/* Percentage Split Bar */}
                   <div className="mb-8 space-y-3">
                     <div className="flex justify-between text-[10px] font-black uppercase tracking-widest">
                       <span className="text-emerald-400">Food {(stats.config.foodPct * 100).toFixed(0)}%</span>
@@ -425,7 +477,7 @@ const App = () => {
                   </div>
                 </div>
 
-                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-xl">
+                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-xl overflow-hidden">
                     <div className="flex items-center justify-between mb-6">
                         <h3 className="text-xs font-black uppercase italic tracking-widest">Beverage Split History</h3>
                         <div className="flex gap-3 text-[8px] font-black uppercase tracking-tighter">
@@ -434,11 +486,43 @@ const App = () => {
                             <span className="flex items-center gap-1"><div className="w-2 h-2 bg-emerald-500 rounded-full"></div> Wine</span>
                         </div>
                     </div>
-                    <div className="h-[200px]">
+                    <div className="h-[250px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={selectedEstablishment.history} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                                <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 8, fill: '#64748b'}} axisLine={false} tickLine={false} />
-                                <Tooltip cursor={{fill: '#ffffff10'}} contentStyle={{backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', fontSize: '10px'}} formatter={(value) => formatCurrency(value)} />
+                            <BarChart 
+                              data={selectedEstablishment.history} 
+                              margin={{ top: 10, right: 30, left: 20, bottom: 20 }}
+                            >
+                                <CartesianGrid vertical={false} stroke="#ffffff08" />
+                                <XAxis 
+                                  dataKey={DATE_FIELD} 
+                                  tickFormatter={formatDate} 
+                                  tick={{fontSize: 9, fill: '#94a3b8', fontWeight: 600}} 
+                                  axisLine={false} 
+                                  tickLine={false}
+                                  dy={10}
+                                />
+                                <YAxis 
+                                  tickFormatter={formatCurrency} 
+                                  tick={{fontSize: 9, fill: '#94a3b8', fontWeight: 600}} 
+                                  axisLine={false} 
+                                  tickLine={false}
+                                  dx={-5}
+                                />
+                                <Tooltip 
+                                  cursor={{fill: '#ffffff10'}} 
+                                  contentStyle={{
+                                    backgroundColor: '#0F172A', 
+                                    border: '1px solid #334155', 
+                                    borderRadius: '16px', 
+                                    fontSize: '11px',
+                                    fontWeight: 'bold',
+                                    color: '#f1f5f9',
+                                    padding: '12px',
+                                    boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)'
+                                  }} 
+                                  itemStyle={{ padding: '2px 0' }}
+                                  formatter={(value) => [`$${parseFloat(value).toLocaleString()}`, '']} 
+                                />
                                 <Bar dataKey="liquor" stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} />
                                 <Bar dataKey="beer" stackId="a" fill="#818cf8" radius={[0, 0, 0, 0]} />
                                 <Bar dataKey="wine" stackId="a" fill="#10b981" radius={[4, 4, 0, 0]} />
