@@ -17,7 +17,8 @@ import {
   Settings,
   X,
   AlertCircle,
-  PieChart as PieIcon
+  PieChart as PieIcon,
+  TrendingUp
 } from 'lucide-react';
 import {
   BarChart,
@@ -67,20 +68,8 @@ const App = () => {
   const [showSettings, setShowSettings] = useState(false);
 
   const getActiveApiKey = () => {
-    // 1. Manual User Input
     if (customApiKey) return customApiKey;
-    
-    // 2. Global variable fallback for environment keys
-    // (Vite's import.meta.env is replaced here with a more robust check for this environment)
-    try {
-      if (typeof process !== 'undefined' && process.env?.VITE_GEMINI_API_KEY) {
-        return process.env.VITE_GEMINI_API_KEY;
-      }
-    } catch (e) {}
-
-    // 3. Environment provided apiKey
     if (typeof apiKey !== 'undefined' && apiKey) return apiKey;
-    
     return "";
   };
 
@@ -225,7 +214,8 @@ const App = () => {
           ...h,
           liquor: parseFloat(h.liquor_receipts || 0),
           beer: parseFloat(h.beer_receipts || 0),
-          wine: parseFloat(h.wine_receipts || 0)
+          wine: parseFloat(h.wine_receipts || 0),
+          alcohol_total: parseFloat(h[TOTAL_FIELD] || 0)
         }))
       });
       performIntelligenceLookup(establishment);
@@ -235,11 +225,18 @@ const App = () => {
   const stats = useMemo(() => {
     if (!selectedEstablishment || !selectedEstablishment.history.length) return null;
     const history = selectedEstablishment.history;
-    const nonZeroMonths = history.filter(m => parseFloat(m[TOTAL_FIELD]) > 0);
-    const averageAlcohol = nonZeroMonths.length > 0 ? (nonZeroMonths.reduce((sum, m) => sum + parseFloat(m[TOTAL_FIELD] || 0), 0) / nonZeroMonths.length) : 0;
+    const nonZeroMonths = history.filter(m => m.alcohol_total > 0);
+    const averageAlcohol = nonZeroMonths.length > 0 ? (nonZeroMonths.reduce((sum, m) => sum + m.alcohol_total, 0) / nonZeroMonths.length) : 0;
+    
     const config = VENUE_TYPES[venueType];
     const estimatedFoodAvg = config.alcoholPct > 0 ? (averageAlcohol / config.alcoholPct) * config.foodPct : 0;
-    return { averageAlcohol, estimatedFoodAvg, estimatedTotalAvg: averageAlcohol + estimatedFoodAvg, config };
+
+    return { 
+      averageAlcohol, 
+      estimatedFoodAvg, 
+      estimatedTotalAvg: averageAlcohol + estimatedFoodAvg, 
+      config
+    };
   }, [selectedEstablishment, venueType]);
 
   return (
@@ -319,34 +316,27 @@ const App = () => {
             </form>
           </section>
 
-          {/* Results List: Standard Search */}
-          {viewMode === 'search' && results.length > 0 && (
+          {/* Results List */}
+          {((viewMode === 'search' && results.length > 0) || (viewMode === 'top' && topAccounts.length > 0)) && (
             <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-              {results.map((item) => (
-                <button key={`${item.taxpayer_number}-${item.location_number}`} onClick={() => analyzeLocation(item)} className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${isSelected(item) ? 'bg-indigo-500 border-indigo-400' : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'}`}>
-                  <div className="truncate">
-                    <h4 className={`font-black uppercase truncate text-sm italic tracking-tight ${isSelected(item) ? 'text-slate-900' : 'text-slate-100 group-hover:text-indigo-400'}`}>{item.location_name}</h4>
-                    <p className={`text-[9px] uppercase font-bold truncate mt-0.5 ${isSelected(item) ? 'text-slate-900/70' : 'text-slate-500'}`}>{item.location_city}</p>
-                  </div>
-                  <ChevronRight size={18} className={isSelected(item) ? 'text-slate-900' : 'text-slate-600'} />
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Results List: Rankings Display */}
-          {viewMode === 'top' && topAccounts.length > 0 && (
-            <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-              {topAccounts.map((item, idx) => (
+              {(viewMode === 'search' ? results : topAccounts).map((item, idx) => (
                 <button key={`${item.taxpayer_number}-${item.location_number}`} onClick={() => analyzeLocation(item)} className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${isSelected(item) ? 'bg-indigo-500 border-indigo-400' : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'}`}>
                   <div className="flex items-center gap-4 truncate">
-                    <span className={`text-[10px] font-black w-6 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>{idx + 1}</span>
+                    {viewMode === 'top' && <span className={`text-[10px] font-black w-6 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>{idx + 1}</span>}
                     <div className="truncate">
                       <h4 className={`font-black uppercase truncate text-sm italic tracking-tight ${isSelected(item) ? 'text-slate-900' : 'text-slate-100 group-hover:text-indigo-400'}`}>{item.location_name}</h4>
-                      <p className={`text-[9px] uppercase font-bold truncate mt-0.5 ${isSelected(item) ? 'text-slate-900/70' : 'text-slate-500'}`}>{formatCurrency(item.annual_sales)} /yr</p>
+                      <p className={`text-[9px] uppercase font-bold truncate mt-0.5 ${isSelected(item) ? 'text-slate-900/70' : 'text-slate-500'}`}>{item.location_city}</p>
                     </div>
                   </div>
-                  <ChevronRight size={18} className={isSelected(item) ? 'text-slate-900' : 'text-slate-600'} />
+                  <div className="flex items-center gap-3 shrink-0">
+                    {viewMode === 'top' && (
+                      <div className="text-right">
+                        <p className={`text-[10px] font-black italic ${isSelected(item) ? 'text-slate-900' : 'text-indigo-400'}`}>{formatCurrency(item.avg_monthly_volume)}</p>
+                        <p className={`text-[7px] font-black uppercase tracking-tighter opacity-60 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>Monthly Avg</p>
+                      </div>
+                    )}
+                    <ChevronRight size={16} className={isSelected(item) ? 'text-slate-900' : 'text-slate-600'} />
+                  </div>
                 </button>
               ))}
             </div>
@@ -357,9 +347,17 @@ const App = () => {
           {selectedEstablishment ? (
             <div className="space-y-6">
               <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2.5rem] border border-slate-700 shadow-2xl relative overflow-hidden">
-                <div className="relative z-10">
-                  <h2 className="text-3xl md:text-5xl font-black text-white tracking-tighter uppercase italic leading-none">{selectedEstablishment.info.location_name}</h2>
-                  <p className="text-slate-400 flex items-center gap-2 mt-5 text-[11px] font-bold uppercase tracking-widest"><MapPin size={16} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}</p>
+                <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
+                  <div>
+                    <h2 className="text-3xl md:text-5xl font-black text-white tracking-tighter uppercase italic leading-none">{selectedEstablishment.info.location_name}</h2>
+                    <p className="text-slate-400 flex items-center gap-2 mt-5 text-[11px] font-bold uppercase tracking-widest"><MapPin size={16} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}</p>
+                  </div>
+                  
+                  {/* Estimated Total GPV - Moved Here */}
+                  <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10 shrink-0 min-w-[180px]">
+                    <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
+                    <p className="text-3xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
+                  </div>
                 </div>
 
                 <div className="bg-[#0F172A]/60 rounded-[2rem] border border-slate-700/50 p-6 md:p-8 mt-10 relative z-10">
@@ -401,32 +399,42 @@ const App = () => {
                     <PieIcon size={18} className="text-indigo-400 opacity-50" />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
-                      <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1">Alcohol Avg</p>
-                      <p className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.averageAlcohol)}</p>
-                    </div>
-                    <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
-                      <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">Est. Revenue</p>
-                      <p className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</p>
+                  <div className="grid grid-cols-1 gap-3">
+                    <div className="flex gap-3">
+                        <div className="flex-1 bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
+                            <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest mb-1">Alcohol Avg</p>
+                            <p className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.averageAlcohol)}</p>
+                        </div>
+                        <div className="flex-1 bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
+                            <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest mb-1">Est. Food Sales</p>
+                            <p className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedFoodAvg)}</p>
+                        </div>
                     </div>
                   </div>
                 </div>
 
                 <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700">
-                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Trend</h3>
-                    <div className="h-[200px] w-full">
+                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Reported Alcohol Sales</h3>
+                    <div className="h-[220px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={selectedEstablishment.history} margin={{ left: -20 }}>
                                 <CartesianGrid vertical={false} stroke="#ffffff05" />
                                 <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
                                 <YAxis tickFormatter={formatCurrency} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
-                                <Tooltip contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}} />
+                                <Tooltip 
+                                    contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}}
+                                    formatter={(value) => [formatCurrency(value), ""]}
+                                />
                                 <Bar dataKey="liquor" stackId="a" fill="#6366f1" />
                                 <Bar dataKey="beer" stackId="a" fill="#818cf8" />
-                                <Bar dataKey="wine" stackId="a" fill="#10b981" />
+                                <Bar dataKey="wine" stackId="a" fill="#a5b4fc" />
                             </BarChart>
                         </ResponsiveContainer>
+                    </div>
+                    <div className="flex justify-center gap-3 mt-4">
+                        <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-indigo-500 rounded-full"></div><span className="text-[8px] font-black uppercase text-slate-500">Liquor</span></div>
+                        <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-indigo-400 rounded-full"></div><span className="text-[8px] font-black uppercase text-slate-500">Beer</span></div>
+                        <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-indigo-300 rounded-full"></div><span className="text-[8px] font-black uppercase text-slate-500">Wine</span></div>
                     </div>
                 </div>
               </div>
