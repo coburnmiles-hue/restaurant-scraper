@@ -67,8 +67,20 @@ const App = () => {
   const [showSettings, setShowSettings] = useState(false);
 
   const getActiveApiKey = () => {
+    // 1. Manual User Input
     if (customApiKey) return customApiKey;
+    
+    // 2. Global variable fallback for environment keys
+    // (Vite's import.meta.env is replaced here with a more robust check for this environment)
+    try {
+      if (typeof process !== 'undefined' && process.env?.VITE_GEMINI_API_KEY) {
+        return process.env.VITE_GEMINI_API_KEY;
+      }
+    } catch (e) {}
+
+    // 3. Environment provided apiKey
     if (typeof apiKey !== 'undefined' && apiKey) return apiKey;
+    
     return "";
   };
 
