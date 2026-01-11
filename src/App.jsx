@@ -28,8 +28,20 @@ import {
   ResponsiveContainer
 } from 'recharts';
 
-// Global API Key handled by environment
-const API_KEY = ""; 
+// Fallback for environment variables to support different build targets
+const getApiKey = () => {
+  try {
+    // Vite/Vercel standard
+    if (import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
+      return import.meta.env.VITE_GEMINI_API_KEY;
+    }
+    return "";
+  } catch (e) {
+    return "";
+  }
+};
+
+const API_KEY = getApiKey();
 
 // Dataset Configuration
 const DATASET_ID = 'naix-2893';
@@ -86,6 +98,10 @@ const App = () => {
 
   // GEMINI API WITH EXPONENTIAL BACKOFF
   const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
+    if (!API_KEY) {
+      throw new Error("API Key missing. Please check Vercel ENV settings for VITE_GEMINI_API_KEY.");
+    }
+    
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
         method: 'POST',
@@ -134,7 +150,7 @@ const App = () => {
       const text = await callGeminiWithRetry(userQuery);
       setAiResponse(text || "No data returned.");
     } catch (err) { 
-      setAiResponse(`OWNERS: Data unavailable\nLOCATION COUNT: Connection Error\nACCOUNT DETAILS: We were unable to reach the intelligence server after multiple attempts.`); 
+      setAiResponse(`OWNERS: Data unavailable\nLOCATION COUNT: Connection Error\nACCOUNT DETAILS: ${err.message || "Multiple connection attempts failed."}`); 
     } finally { 
       setAiLoading(false); 
     }
@@ -332,10 +348,9 @@ const App = () => {
                     <p className="text-slate-400 flex items-center gap-2 mt-5 text-[11px] font-bold uppercase tracking-widest"><MapPin size={16} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}</p>
                   </div>
                   
-                  {/* Estimated Total GPV - Above Engine */}
-                  <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10 shrink-0 min-w-[200px]">
+                  <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10 shrink-0 min-w-[220px]">
                     <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
-                    <p className="text-3xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
+                    <p className="text-4xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
                   </div>
                 </div>
 
@@ -390,11 +405,15 @@ const App = () => {
                             <p className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedFoodAvg)}</p>
                         </div>
                     </div>
+                    <div className="bg-[#0F172A] p-5 rounded-2xl border-2 border-indigo-500/30">
+                        <p className="text-[9px] font-black text-indigo-300 uppercase tracking-widest mb-1">Estimated Total GPV</p>
+                        <p className="text-2xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</p>
+                    </div>
                   </div>
                 </div>
 
                 <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700">
-                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Reported Alcohol Sales</h3>
+                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Alcohol Sales (Liquor/Beer/Wine)</h3>
                     <div className="h-[220px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={selectedEstablishment.history} margin={{ left: -20 }}>
@@ -405,16 +424,16 @@ const App = () => {
                                     contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}}
                                     formatter={(value) => [formatCurrency(value), ""]}
                                 />
-                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" />
-                                <Bar dataKey="beer" stackId="a" fill="#818cf8" />
-                                <Bar dataKey="wine" stackId="a" fill="#a5b4fc" />
+                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" name="Liquor" />
+                                <Bar dataKey="beer" stackId="a" fill="#818cf8" name="Beer" />
+                                <Bar dataKey="wine" stackId="a" fill="#a5b4fc" name="Wine" />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
-                    <div className="flex justify-center gap-3 mt-4">
-                        <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-indigo-500 rounded-full"></div><span className="text-[8px] font-black uppercase text-slate-500">Liquor</span></div>
-                        <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-indigo-400 rounded-full"></div><span className="text-[8px] font-black uppercase text-slate-500">Beer</span></div>
-                        <div className="flex items-center gap-1.5"><div className="w-2 h-2 bg-indigo-300 rounded-full"></div><span className="text-[8px] font-black uppercase text-slate-500">Wine</span></div>
+                    <div className="flex justify-center gap-4 mt-6">
+                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#6366f1] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Liquor</span></div>
+                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#818cf8] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Beer</span></div>
+                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#a5b4fc] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Wine</span></div>
                     </div>
                 </div>
               </div>
