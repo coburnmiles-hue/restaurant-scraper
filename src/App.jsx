@@ -292,15 +292,29 @@ const App = () => {
                 <div className="w-1 h-1 bg-indigo-500 rounded-full animate-pulse"></div>
                 {viewMode === 'search' ? 'Establishment Search' : 'City Ranking Scrape'}
               </h3>
-              <div className="relative">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                <input 
-                  type="text" 
-                  placeholder={viewMode === 'search' ? "Restaurant Name..." : "Texas City (e.g. Austin)..."} 
-                  className="w-full pl-12 pr-4 py-3.5 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500 transition-all" 
-                  value={viewMode === 'search' ? searchTerm : topCitySearch} 
-                  onChange={(e) => viewMode === 'search' ? setSearchTerm(e.target.value) : setTopCitySearch(e.target.value)} 
-                />
+              <div className="space-y-3">
+                <div className="relative">
+                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                  <input 
+                    type="text" 
+                    placeholder={viewMode === 'search' ? "Restaurant Name..." : "Texas City (e.g. Austin)..."} 
+                    className="w-full pl-12 pr-4 py-3.5 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500 transition-all uppercase" 
+                    value={viewMode === 'search' ? searchTerm : topCitySearch} 
+                    onChange={(e) => viewMode === 'search' ? setSearchTerm(e.target.value.toUpperCase()) : setTopCitySearch(e.target.value.toUpperCase())} 
+                  />
+                </div>
+                {viewMode === 'search' && (
+                  <div className="relative">
+                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                    <input 
+                      type="text" 
+                      placeholder="City Filter (Optional)..." 
+                      className="w-full pl-12 pr-4 py-3.5 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500 transition-all uppercase" 
+                      value={cityFilter} 
+                      onChange={(e) => setCityFilter(e.target.value.toUpperCase())} 
+                    />
+                  </div>
+                )}
               </div>
               <button type="submit" disabled={loading} className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-900 font-black py-4 rounded-2xl uppercase tracking-widest text-[10px] flex justify-center items-center gap-2 transition-all">
                 {loading ? <Loader2 className="animate-spin" size={18} /> : (viewMode === 'search' ? 'Execute Scrape' : 'Analyze Market')}
@@ -326,7 +340,7 @@ const App = () => {
                   <div className="flex items-center gap-3 shrink-0">
                     {viewMode === 'top' && (
                       <div className="text-right">
-                        <p className={`text-[10px] font-black italic ${isSelected(item) ? 'text-slate-900' : 'text-indigo-400'}`}>{formatCurrency(item.avg_monthly_volume)}</p>
+                        <p className={`text-sm font-black italic tracking-tighter ${isSelected(item) ? 'text-slate-900' : 'text-indigo-400'}`}>{formatCurrency(item.avg_monthly_volume)}</p>
                         <p className={`text-[7px] font-black uppercase tracking-tighter opacity-60 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>Alc. Vol/Mo</p>
                       </div>
                     )}
@@ -425,15 +439,15 @@ const App = () => {
                                     formatter={(value) => [formatCurrency(value), ""]}
                                 />
                                 <Bar dataKey="liquor" stackId="a" fill="#6366f1" name="Liquor" />
-                                <Bar dataKey="beer" stackId="a" fill="#818cf8" name="Beer" />
-                                <Bar dataKey="wine" stackId="a" fill="#a5b4fc" name="Wine" />
+                                <Bar dataKey="beer" stackId="a" fill="#fbbf24" name="Beer" />
+                                <Bar dataKey="wine" stackId="a" fill="#ec4899" name="Wine" />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
                     <div className="flex justify-center gap-4 mt-6">
                         <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#6366f1] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Liquor</span></div>
-                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#818cf8] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Beer</span></div>
-                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#a5b4fc] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Wine</span></div>
+                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#fbbf24] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Beer</span></div>
+                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#ec4899] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Wine</span></div>
                     </div>
                 </div>
               </div>
