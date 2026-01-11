@@ -9,21 +9,13 @@ import {
   Utensils,
   Trophy,
   Building2,
-  ExternalLink,
   Sparkles,
-  Zap,
-  CheckCircle2,
-  AlertTriangle,
-  Info,
-  Users,
-  Layers,
-  FileSearch,
   Target,
-  TrendingUp,
-  Briefcase,
   UserCheck,
   Globe,
-  Link2
+  Link2,
+  Settings,
+  X
 } from 'lucide-react';
 import {
   BarChart,
@@ -32,28 +24,12 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer
 } from 'recharts';
 
 // API Configuration
 const DATASET_ID = 'naix-2893';
 const BASE_URL = `https://data.texas.gov/resource/${DATASET_ID}.json`;
-
-/**
- * FIX: Browser environments don't have access to 'process' directly.
- * We use a safe check to prevent ReferenceErrors.
- */
-const getApiKey = () => {
-  try {
-    if (typeof process !== 'undefined' && process.env && process.env.REACT_APP_GEMINI_API_KEY) {
-      return process.env.REACT_APP_GEMINI_API_KEY;
-    }
-  } catch (e) {}
-  return "";
-};
-
-const GEMINI_API_KEY = getApiKey();
 
 const DATE_FIELD = 'obligation_end_date_yyyymmdd';
 const TOTAL_FIELD = 'total_receipts';
@@ -81,16 +57,33 @@ const App = () => {
   const [error, setError] = useState(null);
   const [venueType, setVenueType] = useState('casual_dining');
   
+  // Intelligence Engine State
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [groundingSources, setGroundingSources] = useState([]);
+  const [customApiKey, setCustomApiKey] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+
+  // Helper to find the API key from multiple sources
+  const getActiveApiKey = () => {
+    if (customApiKey) return customApiKey;
+    if (typeof apiKey !== 'undefined' && apiKey) return apiKey;
+    
+    // Check various common env var names
+    try {
+      const env = window.process?.env || {};
+      return env.GEMINI_API_KEY || env.REACT_APP_GEMINI_API_KEY || env.VITE_GEMINI_API_KEY || "";
+    } catch (e) {
+      return "";
+    }
+  };
 
   const formatCurrency = (val) => {
     const num = parseFloat(val);
     if (isNaN(num)) return '$0';
     if (num >= 1000000) return `$${(num / 1000000).toFixed(1)}M`;
     if (num >= 1000) return `$${(num / 1000).toFixed(0)}K`;
-    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num);
+    return `$${num.toFixed(0)}`;
   };
 
   const formatDate = (dateStr) => {
@@ -120,30 +113,10 @@ const App = () => {
     return sections;
   }, [aiResponse]);
 
-  const fetchWithRetry = async (url, options, maxRetries = 5) => {
-    let delay = 1000;
-    for (let i = 0; i < maxRetries; i++) {
-      try {
-        const response = await fetch(url, options);
-        if (response.ok) return response;
-        if (response.status === 429 || response.status >= 500) {
-          await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 2; continue;
-        }
-        throw new Error(`API_ERROR_${response.status}`);
-      } catch (err) {
-        if (i === maxRetries - 1) throw err;
-        await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 2;
-      }
-    }
-  };
-
   const performIntelligenceLookup = async (establishment) => {
-    const apiKeyToUse = typeof apiKey !== 'undefined' ? apiKey : GEMINI_API_KEY;
-
-    if (!apiKeyToUse) {
-      setAiResponse("OWNERS: API Key Missing\nLOCATION COUNT: Check Vercel Environment Variables\nACCOUNT DETAILS: See documentation for REACT_APP_GEMINI_API_KEY setup.");
+    const key = getActiveApiKey();
+    if (!key) {
+      setAiResponse("OWNERS: API Key Missing\nLOCATION COUNT: Check Vercel Environment Variables\nACCOUNT DETAILS: Ensure GEMINI_API_KEY is set in Vercel or use the settings icon to paste it manually.");
       return;
     }
 
@@ -160,24 +133,42 @@ const App = () => {
       LOCATION COUNT: [Number of units or regional footprint]
       ACCOUNT DETAILS: [Concept vibe, target demographic, and any recent news]`;
 
-      const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKeyToUse}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          contents: [{ parts: [{ text: userQuery }] }], 
-          tools: [{ "google_search": {} }] 
-        })
-      });
-      
-      const result = await response.json();
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      const sources = result.candidates?.[0]?.groundingMetadata?.groundingAttributions?.map(a => ({ uri: a.web?.uri, title: a.web?.title })) || [];
+      let retryCount = 0;
+      let success = false;
+      let resultData;
+
+      while (retryCount < 3 && !success) {
+        try {
+          const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              contents: [{ parts: [{ text: userQuery }] }], 
+              tools: [{ "google_search": {} }] 
+            })
+          });
+          
+          if (response.ok) {
+            resultData = await response.json();
+            success = true;
+          } else {
+            throw new Error(`API status ${response.status}`);
+          }
+        } catch (err) {
+          retryCount++;
+          if (retryCount === 3) throw err;
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, retryCount)));
+        }
+      }
+
+      const text = resultData.candidates?.[0]?.content?.parts?.[0]?.text;
+      const sources = resultData.candidates?.[0]?.groundingMetadata?.groundingAttributions?.map(a => ({ uri: a.web?.uri, title: a.web?.title })) || [];
       
       if (!text) throw new Error("EMPTY_AI_RESPONSE");
       setAiResponse(text); 
       setGroundingSources(sources);
     } catch (err) { 
-      setAiResponse(`OWNERS: ${taxpayer} (Likely held by private group)\nLOCATION COUNT: Local operator in ${city}.\nACCOUNT DETAILS: Research suggests a high-volume hospitality concept.`); 
+      setAiResponse(`OWNERS: Request failed (${err.message})\nLOCATION COUNT: Local operator in ${city}.\nACCOUNT DETAILS: High-volume hospitality concept.`); 
     } finally { setAiLoading(false); }
   };
 
@@ -256,13 +247,46 @@ const App = () => {
   }, [selectedEstablishment, venueType]);
 
   return (
-    <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans p-4 md:p-8">
+    <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans p-4 md:p-8 relative">
+      {/* Settings Modal */}
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-[#1E293B] w-full max-w-md p-8 rounded-[2rem] border border-slate-700 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">System Settings</h2>
+              <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-slate-700 rounded-full transition-colors"><X size={20}/></button>
+            </div>
+            <div className="space-y-4">
+              <label className="block">
+                <span className="text-[10px] font-black uppercase text-indigo-400 tracking-widest block mb-2">Gemini API Key</span>
+                <input 
+                  type="password" 
+                  placeholder="Paste key here if env var fails" 
+                  className="w-full bg-[#0F172A] border border-slate-700 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={customApiKey}
+                  onChange={(e) => setCustomApiKey(e.target.value)}
+                />
+              </label>
+              <p className="text-[10px] text-slate-500 leading-relaxed uppercase font-bold tracking-tight">
+                This key is used for real-time owner identification. If added here, it overrides Vercel environment variables.
+              </p>
+              <button onClick={() => setShowSettings(false)} className="w-full bg-indigo-500 py-3 rounded-xl font-black text-xs uppercase text-slate-900 tracking-widest mt-4">Save Configuration</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header className="max-w-6xl mx-auto mb-10 flex flex-col md:flex-row justify-between items-center gap-6">
-        <div>
-          <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tighter italic">
-            <BarChart3 className="text-indigo-400" size={36} /> RESTAURANT SCRAPER
-          </h1>
-          <p className="text-slate-400 font-medium uppercase tracking-widest text-[10px]">TX Comptroller Live Access</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tighter italic">
+              <BarChart3 className="text-indigo-400" size={36} /> RESTAURANT SCRAPER
+            </h1>
+            <p className="text-slate-400 font-medium uppercase tracking-widest text-[10px]">TX Comptroller Live Access</p>
+          </div>
+          <button onClick={() => setShowSettings(true)} className="p-3 bg-[#1E293B] rounded-2xl border border-slate-700 text-slate-400 hover:text-white transition-all">
+            <Settings size={20} />
+          </button>
         </div>
         <div className="flex bg-[#1E293B] p-1.5 rounded-2xl border border-slate-700 shadow-2xl">
           <button onClick={() => setViewMode('search')} className={`px-6 py-2.5 rounded-xl text-sm font-black transition-all ${viewMode === 'search' ? 'bg-indigo-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}>
@@ -274,22 +298,22 @@ const App = () => {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8 pb-12">
         <div className="lg:col-span-4 space-y-6">
           <section className="bg-[#1E293B] p-6 rounded-3xl border border-slate-700 shadow-xl">
             <form onSubmit={viewMode === 'search' ? handleSearch : handleTopAccountsSearch} className="space-y-4">
               <h3 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest">{viewMode === 'search' ? 'Establishment Lookup' : 'City Leaderboard'}</h3>
               <div className="relative">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                <input type="text" placeholder={viewMode === 'search' ? "Name (e.g. Pappadeaux)" : "Enter Texas City"} className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500" value={viewMode === 'search' ? searchTerm : topCitySearch} onChange={(e) => viewMode === 'search' ? setSearchTerm(e.target.value) : setTopCitySearch(e.target.value)} />
+                <input type="text" placeholder={viewMode === 'search' ? "Name (e.g. Pappadeaux)" : "Enter Texas City"} className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500 placeholder:text-slate-600" value={viewMode === 'search' ? searchTerm : topCitySearch} onChange={(e) => viewMode === 'search' ? setSearchTerm(e.target.value) : setTopCitySearch(e.target.value)} />
               </div>
               {viewMode === 'search' && (
                 <div className="relative">
                   <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input type="text" placeholder="City (Optional)" className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500" value={cityFilter} onChange={(e) => setCityFilter(e.target.value)} />
+                  <input type="text" placeholder="City (Optional)" className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500 placeholder:text-slate-600" value={cityFilter} onChange={(e) => setCityFilter(e.target.value)} />
                 </div>
               )}
-              <button type="submit" disabled={loading} className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-900 font-black py-4 rounded-2xl uppercase tracking-widest text-xs flex justify-center items-center gap-2">
+              <button type="submit" disabled={loading} className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-900 font-black py-4 rounded-2xl uppercase tracking-widest text-xs flex justify-center items-center gap-2 transition-all">
                 {loading ? <Loader2 className="animate-spin" /> : 'Run Scraper'}
               </button>
             </form>
@@ -332,11 +356,11 @@ const App = () => {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="bg-[#0F172A]/40 p-5 rounded-2xl border border-slate-700">
-                        <div className="flex items-center gap-2 text-indigo-400 mb-2"><Building2 size={14} /><span className="text-[9px] font-black uppercase tracking-widest">Taxpayer Name</span></div>
+                        <div className="flex items-center gap-2 text-indigo-400 mb-2"><Building2 size={14} /><span className="text-[9px] font-black uppercase tracking-widest">Taxpayer Entity</span></div>
                         <p className="font-black text-slate-100 text-sm uppercase">{selectedEstablishment.info.taxpayer_name}</p>
                       </div>
                       <div className="bg-white p-6 rounded-2xl text-slate-900 shadow-xl flex flex-col justify-center border-b-4 border-indigo-500">
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Est. Combined Revenue</p>
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Est. Combined Monthly Rev</p>
                         <p className="text-3xl font-black tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</p>
                       </div>
                     </div>
@@ -351,12 +375,12 @@ const App = () => {
                             <Sparkles className="text-white" size={20} />
                         </div>
                         <div>
-                            <h3 className="text-xs font-black uppercase italic tracking-[0.2em] text-white">Live Intelligence Engine</h3>
+                            <h3 className="text-xs font-black uppercase italic tracking-[0.2em] text-white">Prospect Intelligence Engine</h3>
                             <div className="flex items-center gap-2 mt-0.5">
-                              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Deep Prospecting Data</span>
+                              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Deep Search Data</span>
                               {groundingSources.length > 0 && (
                                 <span className="flex items-center gap-1 text-[8px] bg-emerald-500/10 text-emerald-400 px-1.5 py-0.5 rounded border border-emerald-500/20 uppercase font-black">
-                                  <Globe size={8} /> Verified by Search
+                                  <Globe size={8} /> Verified Live
                                 </span>
                               )}
                             </div>
@@ -364,7 +388,7 @@ const App = () => {
                     </div>
                     {aiLoading && (
                         <div className="flex items-center gap-2 text-indigo-400">
-                            <span className="text-[10px] font-black uppercase animate-pulse tracking-widest">Researching People & History...</span>
+                            <span className="text-[10px] font-black uppercase animate-pulse tracking-widest">Researching Owners...</span>
                             <Loader2 size={14} className="animate-spin" />
                         </div>
                     )}
@@ -375,7 +399,7 @@ const App = () => {
                         <div className="flex items-center gap-2 mb-4">
                             <div className="w-1 h-4 bg-indigo-500 rounded-full"></div>
                             <UserCheck size={14} className="text-indigo-400" />
-                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Owner & Leadership</span>
+                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Ownership</span>
                         </div>
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-indigo-500/30 transition-all min-h-[100px] flex items-center">
                             {aiLoading ? (
@@ -389,7 +413,7 @@ const App = () => {
                         <div className="flex items-center gap-2 mb-4">
                             <div className="w-1 h-4 bg-emerald-500 rounded-full"></div>
                             <Globe size={14} className="text-emerald-400" />
-                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Market Presence</span>
+                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Footprint</span>
                         </div>
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-emerald-500/30 transition-all min-h-[100px] flex items-center">
                             {aiLoading ? (
@@ -403,7 +427,7 @@ const App = () => {
                         <div className="flex items-center gap-2 mb-4">
                             <div className="w-1 h-4 bg-amber-500 rounded-full"></div>
                             <Target size={14} className="text-amber-400" />
-                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Account Deep-Dive</span>
+                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Concept Bio</span>
                         </div>
                         <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-amber-500/30 transition-all min-h-[100px] flex items-center">
                             {aiLoading ? (
@@ -433,9 +457,9 @@ const App = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-lg">
-                  <div className="flex items-center gap-3 mb-6 font-black uppercase italic text-sm tracking-widest"><Utensils className="text-indigo-400" /> Revenue Model</div>
+                  <div className="flex items-center gap-3 mb-6 font-black uppercase italic text-sm tracking-widest text-indigo-400"><Utensils size={18} /> Revenue Estimator</div>
                   
                   <div className="mb-6">
                     <select 
@@ -453,25 +477,19 @@ const App = () => {
                       <span className="text-indigo-400">Alcohol {(stats.config.alcoholPct * 100).toFixed(0)}%</span>
                     </div>
                     <div className="h-3 w-full bg-[#0F172A] rounded-full overflow-hidden flex border border-slate-800">
-                      <div 
-                        className="h-full bg-emerald-500 transition-all duration-500 ease-out shadow-[0_0_15px_rgba(16,185,129,0.3)]" 
-                        style={{ width: `${stats.config.foodPct * 100}%` }}
-                      ></div>
-                      <div 
-                        className="h-full bg-indigo-500 transition-all duration-500 ease-out shadow-[0_0_15px_rgba(99,102,241,0.3)]" 
-                        style={{ width: `${stats.config.alcoholPct * 100}%` }}
-                      ></div>
+                      <div className="h-full bg-emerald-500 transition-all duration-500 ease-out" style={{ width: `${stats.config.foodPct * 100}%` }}></div>
+                      <div className="h-full bg-indigo-500 transition-all duration-500 ease-out" style={{ width: `${stats.config.alcoholPct * 100}%` }}></div>
                     </div>
-                    <p className="text-[9px] text-slate-500 font-bold uppercase italic">{stats.config.desc}</p>
+                    <p className="text-[9px] text-slate-500 font-bold uppercase italic tracking-tight">{stats.config.desc}</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-4">
                     <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
-                      <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Alcohol Volume</p>
+                      <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Alcohol Avg</p>
                       <p className="text-xl font-black text-white italic">{formatCurrency(stats.averageAlcohol)}</p>
                     </div>
                     <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
-                      <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest">Food Est. (Calculated)</p>
+                      <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest">Food Est.</p>
                       <p className="text-xl font-black text-white italic">{formatCurrency(stats.estimatedFoodAvg)}</p>
                     </div>
                   </div>
@@ -479,53 +497,27 @@ const App = () => {
 
                 <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-xl overflow-hidden">
                     <div className="flex items-center justify-between mb-6">
-                        <h3 className="text-xs font-black uppercase italic tracking-widest">Beverage Split History</h3>
-                        <div className="flex gap-3 text-[8px] font-black uppercase tracking-tighter">
-                            <span className="flex items-center gap-1"><div className="w-2 h-2 bg-indigo-500 rounded-full"></div> Liquor</span>
-                            <span className="flex items-center gap-1"><div className="w-2 h-2 bg-indigo-300 rounded-full"></div> Beer</span>
-                            <span className="flex items-center gap-1"><div className="w-2 h-2 bg-emerald-500 rounded-full"></div> Wine</span>
+                        <h3 className="text-xs font-black uppercase italic tracking-widest text-white">History (Last 12m)</h3>
+                        <div className="flex gap-2 text-[7px] font-black uppercase">
+                            <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 bg-indigo-500 rounded-full"></div> Liquor</span>
+                            <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 bg-indigo-300 rounded-full"></div> Beer</span>
+                            <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 bg-emerald-500 rounded-full"></div> Wine</span>
                         </div>
                     </div>
-                    <div className="h-[250px] w-full">
+                    <div className="h-[240px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart 
-                              data={selectedEstablishment.history} 
-                              margin={{ top: 10, right: 30, left: 20, bottom: 20 }}
-                            >
-                                <CartesianGrid vertical={false} stroke="#ffffff08" />
-                                <XAxis 
-                                  dataKey={DATE_FIELD} 
-                                  tickFormatter={formatDate} 
-                                  tick={{fontSize: 9, fill: '#94a3b8', fontWeight: 600}} 
-                                  axisLine={false} 
-                                  tickLine={false}
-                                  dy={10}
-                                />
-                                <YAxis 
-                                  tickFormatter={formatCurrency} 
-                                  tick={{fontSize: 9, fill: '#94a3b8', fontWeight: 600}} 
-                                  axisLine={false} 
-                                  tickLine={false}
-                                  dx={-5}
-                                />
+                            <BarChart data={selectedEstablishment.history} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                                <CartesianGrid vertical={false} stroke="#ffffff05" />
+                                <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 8, fill: '#64748b', fontWeight: 600}} axisLine={false} tickLine={false} />
+                                <YAxis tickFormatter={formatCurrency} tick={{fontSize: 8, fill: '#64748b', fontWeight: 600}} axisLine={false} tickLine={false} width={35} />
                                 <Tooltip 
-                                  cursor={{fill: '#ffffff10'}} 
-                                  contentStyle={{
-                                    backgroundColor: '#0F172A', 
-                                    border: '1px solid #334155', 
-                                    borderRadius: '16px', 
-                                    fontSize: '11px',
-                                    fontWeight: 'bold',
-                                    color: '#f1f5f9',
-                                    padding: '12px',
-                                    boxShadow: '0 20px 25px -5px rgb(0 0 0 / 0.1)'
-                                  }} 
-                                  itemStyle={{ padding: '2px 0' }}
+                                  cursor={{fill: '#ffffff05'}} 
+                                  contentStyle={{backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', fontSize: '10px'}} 
                                   formatter={(value) => [`$${parseFloat(value).toLocaleString()}`, '']} 
                                 />
-                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} />
-                                <Bar dataKey="beer" stackId="a" fill="#818cf8" radius={[0, 0, 0, 0]} />
-                                <Bar dataKey="wine" stackId="a" fill="#10b981" radius={[4, 4, 0, 0]} />
+                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" />
+                                <Bar dataKey="beer" stackId="a" fill="#818cf8" />
+                                <Bar dataKey="wine" stackId="a" fill="#10b981" />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
@@ -535,59 +527,45 @@ const App = () => {
           ) : (
             <div className="h-[600px] flex flex-col items-center justify-center text-center space-y-6 bg-[#1E293B]/20 rounded-[3rem] border border-dashed border-slate-700">
                <div className="w-24 h-24 bg-indigo-500/10 rounded-full flex items-center justify-center mb-4">
-                  <FileSearch size={48} className="text-indigo-400" />
+                  <Search size={48} className="text-indigo-400 opacity-50" />
                </div>
                <div>
                   <h2 className="text-2xl font-black text-white uppercase italic tracking-tight">System Ready</h2>
-                  <p className="text-slate-400 max-w-sm mt-2 font-medium">Search for a Texas establishment or browse rankings to begin intelligence collection.</p>
+                  <p className="text-slate-500 max-w-sm mt-2 font-medium">Lookup an establishment to extract data.</p>
                </div>
             </div>
           )}
           
           {viewMode === 'top' && topAccounts.length > 0 && (
-            <div className="bg-[#1E293B] rounded-[2rem] border border-slate-700 overflow-hidden shadow-2xl mt-12">
-              <div className="p-8 border-b border-slate-700 flex justify-between items-center bg-[#0F172A]/30 font-black text-white italic uppercase tracking-tighter">Market Leaders: {topCitySearch} <Trophy className="text-amber-400" /></div>
+            <div className="bg-[#1E293B] rounded-[2rem] border border-slate-700 overflow-hidden shadow-2xl mt-8">
+              <div className="p-8 border-b border-slate-700 flex justify-between items-center bg-[#0F172A]/30 font-black text-white italic uppercase tracking-tighter">Market Leaders: {topCitySearch}</div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left">
                   <thead className="bg-[#0F172A]/50 text-[10px] uppercase font-black text-slate-500 tracking-widest">
                     <tr>
                       <th className="p-6">Rank</th>
-                      <th className="p-6">Establishment & Address</th>
-                      <th className="p-6 text-right">Avg Mo. Sales</th>
+                      <th className="p-6">Establishment</th>
+                      <th className="p-6 text-right">Avg Mo Volume</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
                     {topAccounts.map((account, index) => {
                       const active = isSelected(account);
                       return (
-                        <tr 
-                          key={index} 
-                          onClick={() => analyzeLocation(account)} 
-                          className={`cursor-pointer transition-all group ${active ? 'bg-indigo-500/20' : 'hover:bg-indigo-500/5'}`}
-                        >
+                        <tr key={index} onClick={() => analyzeLocation(account)} className={`cursor-pointer transition-all group ${active ? 'bg-indigo-500/10' : 'hover:bg-slate-800/50'}`}>
                           <td className="p-6">
-                            <div className="flex items-center gap-3">
-                              {active && <div className="w-1.5 h-6 bg-indigo-400 rounded-full animate-pulse shadow-glow shadow-indigo-500/50"></div>}
-                              <span className={`w-7 h-7 flex items-center justify-center rounded-full font-black text-[10px] ${index < 3 ? 'bg-amber-400 text-slate-900 shadow-lg shadow-amber-400/20' : 'bg-slate-800 text-slate-400'} ${active ? 'ring-2 ring-indigo-400 ring-offset-2 ring-offset-[#1E293B]' : ''}`}>
-                                {index+1}
-                              </span>
-                            </div>
+                            <span className={`w-7 h-7 flex items-center justify-center rounded-full font-black text-[10px] ${index < 3 ? 'bg-amber-400 text-slate-900' : 'bg-slate-800 text-slate-400'}`}>
+                              {index+1}
+                            </span>
                           </td>
                           <td className="p-6">
                             <div className="flex flex-col">
-                              <span className={`font-black uppercase italic text-sm transition-colors ${active ? 'text-indigo-400' : 'text-slate-100 group-hover:text-indigo-400'}`}>
-                                {account.location_name}
-                              </span>
-                              <span className={`text-[10px] font-bold uppercase tracking-tight flex items-center gap-1 mt-1 ${active ? 'text-indigo-300/70' : 'text-slate-500'}`}>
-                                <MapPin size={10} className={active ? 'text-indigo-400' : 'text-slate-600'} /> {account.location_address}, {account.location_city}, TX
-                              </span>
+                              <span className={`font-black uppercase italic text-sm ${active ? 'text-indigo-400' : 'text-slate-100 group-hover:text-indigo-400 transition-colors'}`}>{account.location_name}</span>
+                              <span className="text-[10px] font-bold text-slate-500 uppercase">{account.location_address}</span>
                             </div>
                           </td>
                           <td className="p-6 text-right">
-                            <div className="flex flex-col items-end">
-                              <span className={`font-black text-base tracking-tighter ${active ? 'text-indigo-400' : 'text-white'}`}>{formatCurrency(account.avg_monthly_volume)}</span>
-                              <span className={`text-[9px] font-black uppercase ${active ? 'text-indigo-300/50' : 'text-slate-500'}`}>Volume / Mo</span>
-                            </div>
+                            <span className="font-black text-base tracking-tighter text-white">{formatCurrency(account.avg_monthly_volume)}</span>
                           </td>
                         </tr>
                       );
