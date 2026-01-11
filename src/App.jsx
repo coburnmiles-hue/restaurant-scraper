@@ -13,12 +13,10 @@ import {
   Target,
   UserCheck,
   Globe,
-  Link2,
   Settings,
   X,
-  AlertCircle,
-  PieChart as PieIcon,
-  TrendingUp
+  TrendingUp,
+  PieChart as PieIcon
 } from 'lucide-react';
 import {
   BarChart,
@@ -30,10 +28,12 @@ import {
   ResponsiveContainer
 } from 'recharts';
 
-// API Configuration
+// Global API Key handled by environment
+const API_KEY = ""; 
+
+// Dataset Configuration
 const DATASET_ID = 'naix-2893';
 const BASE_URL = `https://data.texas.gov/resource/${DATASET_ID}.json`;
-
 const DATE_FIELD = 'obligation_end_date_yyyymmdd';
 const TOTAL_FIELD = 'total_receipts';
 
@@ -63,15 +63,6 @@ const App = () => {
   // Intelligence Engine State
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
-  const [groundingSources, setGroundingSources] = useState([]);
-  const [customApiKey, setCustomApiKey] = useState('');
-  const [showSettings, setShowSettings] = useState(false);
-
-  const getActiveApiKey = () => {
-    if (customApiKey) return customApiKey;
-    if (typeof apiKey !== 'undefined' && apiKey) return apiKey;
-    return "";
-  };
 
   const formatCurrency = (val) => {
     const num = parseFloat(val);
@@ -93,33 +84,45 @@ const App = () => {
            selectedEstablishment.info.location_number === item.location_number;
   };
 
-  const aiContent = useMemo(() => {
-    if (!aiResponse) return null;
-    const sections = { owners: "Searching...", locations: "Searching...", details: "Searching..." };
-    const normalized = aiResponse.replace(/[*#]/g, '').trim();
-    const ownerMatch = normalized.match(/OWNERS:([\s\S]*?)(?=LOCATION COUNT:|$)/i);
-    const locationMatch = normalized.match(/LOCATION COUNT:([\s\S]*?)(?=ACCOUNT DETAILS:|$)/i);
-    const detailMatch = normalized.match(/ACCOUNT DETAILS:([\s\S]*?)$/i);
-    
-    if (ownerMatch) sections.owners = ownerMatch[1].trim();
-    if (locationMatch) sections.locations = locationMatch[1].trim();
-    if (detailMatch) sections.details = detailMatch[1].trim();
-    
-    return sections;
-  }, [aiResponse]);
+  // GEMINI API WITH EXPONENTIAL BACKOFF
+  const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          systemInstruction: { parts: [{ text: "You are a business intelligence assistant specialized in the Texas hospitality market." }] },
+          tools: [{ "google_search": {} }]
+        })
+      });
+
+      if (!response.ok) {
+        if (retries > 0 && (response.status === 429 || response.status >= 500)) {
+          await new Promise(resolve => setTimeout(resolve, delay));
+          return callGeminiWithRetry(prompt, retries - 1, delay * 2);
+        }
+        throw new Error(`API Error: ${response.status}`);
+      }
+
+      const result = await response.json();
+      return result.candidates?.[0]?.content?.parts?.[0]?.text;
+    } catch (err) {
+      if (retries > 0) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return callGeminiWithRetry(prompt, retries - 1, delay * 2);
+      }
+      throw err;
+    }
+  };
 
   const performIntelligenceLookup = async (establishment) => {
-    const key = getActiveApiKey();
-    if (!key) {
-      setAiResponse("OWNERS: Configuration Required\nLOCATION COUNT: Missing API Key\nACCOUNT DETAILS: Set your key in settings.");
-      return;
-    }
-
     const businessName = establishment.location_name;
     const city = establishment.location_city;
     const taxpayer = establishment.taxpayer_name;
     
-    setAiLoading(true); setAiResponse(null); setGroundingSources([]);
+    setAiLoading(true);
+    setAiResponse(null);
     
     try {
       const userQuery = `Find the individual owners or executive management for "${businessName}" in ${city}, TX. Look specifically for the people behind the LLC "${taxpayer}". 
@@ -128,26 +131,13 @@ const App = () => {
       LOCATION COUNT: [Units]
       ACCOUNT DETAILS: [Quick summary of their market position]`;
 
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          contents: [{ parts: [{ text: userQuery }] }], 
-          tools: [{ "google_search": {} }] 
-        })
-      });
-      
-      if (!response.ok) throw new Error(`API Error ${response.status}`);
-      const resultData = await response.json();
-
-      const text = resultData.candidates?.[0]?.content?.parts?.[0]?.text;
-      const sources = resultData.candidates?.[0]?.groundingMetadata?.groundingAttributions?.map(a => ({ uri: a.web?.uri, title: a.web?.title })) || [];
-      
-      setAiResponse(text || "No data returned."); 
-      setGroundingSources(sources);
+      const text = await callGeminiWithRetry(userQuery);
+      setAiResponse(text || "No data returned.");
     } catch (err) { 
-      setAiResponse(`OWNERS: Error fetching data\nLOCATION COUNT: Request failed: ${err.message}\nACCOUNT DETAILS: N/A`); 
-    } finally { setAiLoading(false); }
+      setAiResponse(`OWNERS: Data unavailable\nLOCATION COUNT: Connection Error\nACCOUNT DETAILS: We were unable to reach the intelligence server after multiple attempts.`); 
+    } finally { 
+      setAiLoading(false); 
+    }
   };
 
   const handleSearch = async (e) => {
@@ -189,8 +179,6 @@ const App = () => {
       const response = await fetch(BASE_URL + query);
       const data = await response.json();
       
-      if (!Array.isArray(data)) throw new Error("Invalid API response format");
-
       setTopAccounts(data.map(account => ({
         ...account,
         annual_sales: parseFloat(account.annual_sales),
@@ -222,6 +210,21 @@ const App = () => {
     } catch (err) { setError(err.message); } finally { setLoading(false); }
   };
 
+  const aiContent = useMemo(() => {
+    if (!aiResponse) return null;
+    const sections = { owners: "Searching...", locations: "Searching...", details: "Searching..." };
+    const normalized = aiResponse.replace(/[*#]/g, '').trim();
+    const ownerMatch = normalized.match(/OWNERS:([\s\S]*?)(?=LOCATION COUNT:|$)/i);
+    const locationMatch = normalized.match(/LOCATION COUNT:([\s\S]*?)(?=ACCOUNT DETAILS:|$)/i);
+    const detailMatch = normalized.match(/ACCOUNT DETAILS:([\s\S]*?)$/i);
+    
+    if (ownerMatch) sections.owners = ownerMatch[1].trim();
+    if (locationMatch) sections.locations = locationMatch[1].trim();
+    if (detailMatch) sections.details = detailMatch[1].trim();
+    
+    return sections;
+  }, [aiResponse]);
+
   const stats = useMemo(() => {
     if (!selectedEstablishment || !selectedEstablishment.history.length) return null;
     const history = selectedEstablishment.history;
@@ -241,30 +244,6 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans p-4 md:p-8 relative selection:bg-indigo-500/30">
-      {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
-          <div className="bg-[#1E293B] w-full max-w-md p-8 rounded-[2.5rem] border border-slate-700 shadow-2xl">
-            <div className="flex justify-between items-center mb-6">
-              <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">API Configuration</h2>
-              <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-slate-700 rounded-full transition-colors"><X size={20}/></button>
-            </div>
-            <div className="space-y-4">
-              <label className="block">
-                <span className="text-[10px] font-black uppercase text-indigo-400 tracking-widest block mb-2">Manual API Key</span>
-                <input 
-                  type="password" 
-                  placeholder="Paste Gemini Key..." 
-                  className="w-full bg-[#0F172A] border border-slate-700 rounded-xl px-4 py-3 outline-none focus:ring-2 focus:ring-indigo-500 text-sm"
-                  value={customApiKey}
-                  onChange={(e) => setCustomApiKey(e.target.value)}
-                />
-              </label>
-              <button onClick={() => setShowSettings(false)} className="w-full bg-indigo-500 hover:bg-indigo-400 py-4 rounded-2xl font-black text-xs uppercase text-slate-900 tracking-widest mt-4">Close Settings</button>
-            </div>
-          </div>
-        </div>
-      )}
-
       <header className="max-w-6xl mx-auto mb-10 flex flex-col md:flex-row justify-between items-center gap-6">
         <div className="flex items-center gap-4">
           <div className="relative">
@@ -277,9 +256,6 @@ const App = () => {
             <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Restaurant Scraper</h1>
             <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Comptroller Intelligence</p>
           </div>
-          <button onClick={() => setShowSettings(true)} className="ml-2 p-3 bg-[#1E293B] rounded-xl border border-slate-700 text-slate-500 hover:text-indigo-400 transition-all">
-            <Settings size={18} />
-          </button>
         </div>
         
         <div className="flex bg-[#1E293B] p-1.5 rounded-2xl border border-slate-700 shadow-2xl">
@@ -316,11 +292,14 @@ const App = () => {
             </form>
           </section>
 
-          {/* Results List */}
           {((viewMode === 'search' && results.length > 0) || (viewMode === 'top' && topAccounts.length > 0)) && (
             <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
               {(viewMode === 'search' ? results : topAccounts).map((item, idx) => (
-                <button key={`${item.taxpayer_number}-${item.location_number}`} onClick={() => analyzeLocation(item)} className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${isSelected(item) ? 'bg-indigo-500 border-indigo-400' : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'}`}>
+                <button 
+                  key={`${item.taxpayer_number}-${item.location_number}`} 
+                  onClick={() => analyzeLocation(item)} 
+                  className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${isSelected(item) ? 'bg-indigo-500 border-indigo-400' : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'}`}
+                >
                   <div className="flex items-center gap-4 truncate">
                     {viewMode === 'top' && <span className={`text-[10px] font-black w-6 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>{idx + 1}</span>}
                     <div className="truncate">
@@ -332,7 +311,7 @@ const App = () => {
                     {viewMode === 'top' && (
                       <div className="text-right">
                         <p className={`text-[10px] font-black italic ${isSelected(item) ? 'text-slate-900' : 'text-indigo-400'}`}>{formatCurrency(item.avg_monthly_volume)}</p>
-                        <p className={`text-[7px] font-black uppercase tracking-tighter opacity-60 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>Monthly Avg</p>
+                        <p className={`text-[7px] font-black uppercase tracking-tighter opacity-60 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>Alc. Vol/Mo</p>
                       </div>
                     )}
                     <ChevronRight size={16} className={isSelected(item) ? 'text-slate-900' : 'text-slate-600'} />
@@ -353,8 +332,8 @@ const App = () => {
                     <p className="text-slate-400 flex items-center gap-2 mt-5 text-[11px] font-bold uppercase tracking-widest"><MapPin size={16} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}</p>
                   </div>
                   
-                  {/* Estimated Total GPV - Moved Here */}
-                  <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10 shrink-0 min-w-[180px]">
+                  {/* Estimated Total GPV - Above Engine */}
+                  <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10 shrink-0 min-w-[200px]">
                     <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
                     <p className="text-3xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
                   </div>
@@ -362,22 +341,24 @@ const App = () => {
 
                 <div className="bg-[#0F172A]/60 rounded-[2rem] border border-slate-700/50 p-6 md:p-8 mt-10 relative z-10">
                   <div className="flex items-center gap-3 mb-8">
-                    <div className="bg-indigo-500 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20"><Sparkles className="text-white" size={20} /></div>
+                    <div className="bg-indigo-500 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20">
+                      {aiLoading ? <Loader2 className="text-white animate-spin" size={20} /> : <Sparkles className="text-white" size={20} />}
+                    </div>
                     <h3 className="text-[11px] font-black uppercase italic tracking-[0.2em] text-white">Owner Intelligence Engine</h3>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
                     <div className="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 h-full min-h-[140px]">
                       <div className="flex items-center gap-2 mb-3"><UserCheck size={14} className="text-indigo-400" /><span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-500">Ownership</span></div>
-                      <p className="text-[11px] text-slate-200 font-bold leading-relaxed uppercase tracking-tight">{aiContent?.owners}</p>
+                      <p className="text-[11px] text-slate-200 font-bold leading-relaxed uppercase tracking-tight">{aiLoading ? "Decrypting ownership..." : aiContent?.owners}</p>
                     </div>
                     <div className="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 h-full min-h-[140px]">
                       <div className="flex items-center gap-2 mb-3"><Globe size={14} className="text-emerald-400" /><span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-500">Location Count</span></div>
-                      <p className="text-[11px] text-slate-200 font-bold leading-relaxed uppercase tracking-tight">{aiContent?.locations}</p>
+                      <p className="text-[11px] text-slate-200 font-bold leading-relaxed uppercase tracking-tight">{aiLoading ? "Scanning network..." : aiContent?.locations}</p>
                     </div>
                     <div className="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 h-full min-h-[140px]">
                       <div className="flex items-center gap-2 mb-3"><Target size={14} className="text-amber-400" /><span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-500">Bio / Vibe</span></div>
-                      <p className="text-[11px] text-slate-200 font-bold leading-relaxed uppercase tracking-tight">{aiContent?.details}</p>
+                      <p className="text-[11px] text-slate-200 font-bold leading-relaxed uppercase tracking-tight">{aiLoading ? "Analyzing brand..." : aiContent?.details}</p>
                     </div>
                   </div>
                 </div>
@@ -390,7 +371,6 @@ const App = () => {
                     {Object.entries(VENUE_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                   </select>
 
-                  {/* Percentage Display */}
                   <div className="bg-[#0F172A]/40 rounded-2xl p-4 mb-6 border border-slate-800 flex items-center justify-between">
                     <div className="flex flex-col gap-1">
                       <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Split Ratio</span>
