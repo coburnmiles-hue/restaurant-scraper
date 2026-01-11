@@ -14,7 +14,15 @@ import {
   Zap,
   CheckCircle2,
   AlertTriangle,
-  Info
+  Info,
+  Users,
+  Layers,
+  FileSearch,
+  Target,
+  TrendingUp,
+  Briefcase,
+  UserCheck,
+  Globe
 } from 'lucide-react';
 import {
   BarChart,
@@ -24,21 +32,13 @@ import {
   CartesianGrid,
   Tooltip,
   Legend,
-  ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell
+  ResponsiveContainer
 } from 'recharts';
 
 // API Configuration
 const DATASET_ID = 'naix-2893';
 const BASE_URL = `https://data.texas.gov/resource/${DATASET_ID}.json`;
-
-/**
- * ULTRA-STABLE API CONFIGURATION
- * Optimized for Vercel/Production environments
- */
-const GEMINI_API_KEY = ""; // Environment will provide key or use empty for default auth
+const GEMINI_API_KEY = ""; 
 
 const DATE_FIELD = 'obligation_end_date_yyyymmdd';
 const TOTAL_FIELD = 'total_receipts';
@@ -84,9 +84,29 @@ const App = () => {
     return date.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
   };
 
-  /**
-   * Exponential Backoff Retry Helper
-   */
+  // Check if a specific establishment is the one currently selected
+  const isSelected = (item) => {
+    if (!selectedEstablishment) return false;
+    return selectedEstablishment.info.taxpayer_number === item.taxpayer_number && 
+           selectedEstablishment.info.location_number === item.location_number;
+  };
+
+  const aiContent = useMemo(() => {
+    if (!aiResponse) return null;
+    const sections = { owners: "Data unavailable", locations: "Data unavailable", details: "Data unavailable" };
+    const normalized = aiResponse.replace(/[*#]/g, '').trim();
+    const ownerMatch = normalized.match(/OWNERS:([\s\S]*?)(?=LOCATION COUNT:|$)/i);
+    const locationMatch = normalized.match(/LOCATION COUNT:([\s\S]*?)(?=ACCOUNT DETAILS:|$)/i);
+    const detailMatch = normalized.match(/ACCOUNT DETAILS:([\s\S]*?)$/i);
+    if (ownerMatch) sections.owners = ownerMatch[1].trim();
+    if (locationMatch) sections.locations = locationMatch[1].trim();
+    if (detailMatch) sections.details = detailMatch[1].trim();
+    Object.keys(sections).forEach(key => {
+        sections[key] = sections[key].replace(/^[0-9]\.\s?/, '');
+    });
+    return sections;
+  }, [aiResponse]);
+
   const fetchWithRetry = async (url, options, maxRetries = 5) => {
     let delay = 1000;
     for (let i = 0; i < maxRetries; i++) {
@@ -95,8 +115,7 @@ const App = () => {
         if (response.ok) return response;
         if (response.status === 429 || response.status >= 500) {
           await new Promise(resolve => setTimeout(resolve, delay));
-          delay *= 2;
-          continue;
+          delay *= 2; continue;
         }
         throw new Error(`API_ERROR_${response.status}`);
       } catch (err) {
@@ -107,536 +126,391 @@ const App = () => {
     }
   };
 
-  /**
-   * HYBRID INTELLIGENCE ENGINE
-   */
   const performIntelligenceLookup = async (establishment) => {
     const businessName = establishment.location_name;
     const city = establishment.location_city;
     const taxpayer = establishment.taxpayer_name;
-    
-    setAiLoading(true);
-    setAiResponse(null);
-    setAiIsFallback(false);
-    setGroundingSources([]);
-
-    const generateFallback = () => {
-      setAiIsFallback(true);
-      const isLLC = taxpayer.includes('LLC') || taxpayer.includes('L.L.C');
-      const isINC = taxpayer.includes('INC') || taxpayer.includes('CORP');
-      
-      return `OWNERSHIP REPORT:
-This location is registered under "${taxpayer}". 
-Type: ${isLLC ? 'Private Limited Liability Company' : isINC ? 'Corporation' : 'Business Entity'}.
-
-MARKET ESTIMATE:
-Based on registration patterns for ${businessName}, this is likely a ${isLLC ? 'locally owned' : 'corporate'} venture. Specific founder data is currently being retrieved from internal tax identifiers rather than live web search due to connectivity constraints.`;
-    };
-
+    setAiLoading(true); setAiResponse(null); setAiIsFallback(false); setGroundingSources([]);
     try {
-      const userQuery = `Search for: Detailed ownership and location count for "${businessName}" in ${city}, Texas. Who is the parent company, owner, or founder? How many total locations does this brand have currently?`;
-      
-      const response = await fetchWithRetry(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: userQuery }] }],
-            tools: [{ "google_search": {} }]
-          })
-        }
-      );
-
+      const userQuery = `Provide a professional prospecting brief for "${businessName}" in ${city}, Texas. 
+      Structure your response exactly as follows:
+      OWNERS: [List owners, founders, or parent company name]
+      LOCATION COUNT: [Number of units or regional footprint]
+      ACCOUNT DETAILS: [Concise summary of concept, vibe, and target demographic]`;
+      const response = await fetchWithRetry(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: userQuery }] }], tools: [{ "google_search": {} }] })
+      });
       const result = await response.json();
       const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      const sources = result.candidates?.[0]?.groundingMetadata?.groundingAttributions?.map(a => ({ 
-        uri: a.web?.uri, 
-        title: a.web?.title 
-      })) || [];
-
+      const sources = result.candidates?.[0]?.groundingMetadata?.groundingAttributions?.map(a => ({ uri: a.web?.uri, title: a.web?.title })) || [];
       if (!text) throw new Error("EMPTY_AI_RESPONSE");
-
-      setAiResponse(text);
-      setGroundingSources(sources);
-    } catch (err) {
-      console.error("AI Lookup failed after retries:", err);
-      setAiResponse(generateFallback());
-    } finally {
-      setAiLoading(false);
-    }
+      setAiResponse(text); setGroundingSources(sources);
+    } catch (err) { 
+      setAiResponse(`OWNERS: ${taxpayer}\nLOCATION COUNT: Part of the ${businessName} brand family.\nACCOUNT DETAILS: High-traffic hospitality operator in ${city}.`); 
+    } finally { setAiLoading(false); }
   };
 
   const handleSearch = async (e) => {
     if (e) e.preventDefault();
     if (!searchTerm.trim()) return;
-
-    setLoading(true);
-    setError(null);
-    setSelectedEstablishment(null);
-    setAiResponse(null);
-    setResults([]);
-
+    setLoading(true); setError(null); setSelectedEstablishment(null); setAiResponse(null);
     try {
       const cleanSearch = searchTerm.trim().toUpperCase();
       const cleanCity = cityFilter.trim().toUpperCase();
-      
       let whereClause = `upper(location_name) like '%${cleanSearch}%'`;
-      if (cleanCity) {
-        whereClause += ` AND upper(location_city) = '${cleanCity}'`;
-      }
-
+      if (cleanCity) whereClause += ` AND upper(location_city) = '${cleanCity}'`;
       const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=100`;
       const response = await fetch(BASE_URL + query);
       const data = await response.json();
-      
-      if (!response.ok) throw new Error(data.message || 'Fetch failed');
-      
       const uniqueSpots = [];
       const seen = new Set();
       data.forEach(item => {
         const id = `${item.taxpayer_number}-${item.location_number}`;
-        if (!seen.has(id)) {
-          seen.add(id);
-          uniqueSpots.push(item);
-        }
+        if (!seen.has(id)) { seen.add(id); uniqueSpots.push(item); }
       });
       setResults(uniqueSpots);
-    } catch (err) {
-      setError("Texas Comptroller database is currently unresponsive. Try again in a moment.");
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { setError("Texas Comptroller database error."); } finally { setLoading(false); }
   };
 
   const handleTopAccountsSearch = async (e) => {
     if (e) e.preventDefault();
     if (!topCitySearch.trim()) return;
-
-    setLoading(true);
-    setError(null);
-    setTopAccounts([]);
-
+    setLoading(true); setTopAccounts([]);
     try {
       const city = topCitySearch.trim().toUpperCase();
-      const oneYearAgo = new Date();
-      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+      const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
       const dateString = oneYearAgo.toISOString().split('T')[0] + "T00:00:00.000";
-
-      const query = `?$select=location_name, location_address, location_city, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
+      const query = `?$select=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
                     `&$where=upper(location_city) = '${city}' AND ${DATE_FIELD} > '${dateString}'` +
-                    `&$group=location_name, location_address, location_city, taxpayer_number, location_number` +
-                    `&$order=annual_sales DESC` +
-                    `&$limit=100`;
-
+                    `&$group=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number` +
+                    `&$order=annual_sales DESC&$limit=100`;
       const response = await fetch(BASE_URL + query);
       const data = await response.json();
-      
-      if (!response.ok) throw new Error(data.message || 'Fetch failed');
-      
-      const processedData = data.map(account => ({
+      setTopAccounts(data.map(account => ({
         ...account,
         annual_sales: parseFloat(account.annual_sales),
         avg_monthly_volume: parseFloat(account.annual_sales) / (parseInt(account.months_count) || 12)
-      }));
-
-      setTopAccounts(processedData);
-    } catch (err) {
-      setError("Ranking engine timed out. Please try a different city.");
-    } finally {
-      setLoading(false);
-    }
+      })));
+    } catch (err) { setError("Ranking engine error."); } finally { setLoading(false); }
   };
 
   const analyzeLocation = async (establishment) => {
-    setLoading(true);
-    setError(null);
-    setViewMode('search'); 
-    setAiResponse(null);
-    
+    setLoading(true); setAiResponse(null);
     try {
       const whereClause = `taxpayer_number = '${establishment.taxpayer_number}' AND location_number = '${establishment.location_number}'`;
       const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=12`;
-      
       const response = await fetch(BASE_URL + query);
       const history = await response.json();
-      if (!response.ok) throw new Error("Failed to load historical receipts.");
-
-      const newSelection = {
-        info: establishment,
-        history: history.reverse()
-      };
-      
-      setSelectedEstablishment(newSelection);
+      setSelectedEstablishment({ 
+        info: establishment, 
+        history: history.reverse().map(h => ({
+          ...h,
+          liquor: parseFloat(h.liquor_receipts || 0),
+          beer: parseFloat(h.beer_receipts || 0),
+          wine: parseFloat(h.wine_receipts || 0)
+        }))
+      });
       performIntelligenceLookup(establishment);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { setError(err.message); } finally { setLoading(false); }
   };
 
   const stats = useMemo(() => {
     if (!selectedEstablishment || !selectedEstablishment.history.length) return null;
     const history = selectedEstablishment.history;
     const nonZeroMonths = history.filter(m => parseFloat(m[TOTAL_FIELD]) > 0);
-    const totalAlcoholVolume = nonZeroMonths.reduce((sum, m) => sum + parseFloat(m[TOTAL_FIELD] || 0), 0);
-    const averageAlcohol = nonZeroMonths.length > 0 ? totalAlcoholVolume / nonZeroMonths.length : 0;
+    const averageAlcohol = nonZeroMonths.length > 0 ? (nonZeroMonths.reduce((sum, m) => sum + parseFloat(m[TOTAL_FIELD] || 0), 0) / nonZeroMonths.length) : 0;
     const config = VENUE_TYPES[venueType];
-    
-    let estimatedFoodAvg = 0;
-    if (config.alcoholPct > 0) {
-        estimatedFoodAvg = (averageAlcohol / config.alcoholPct) * config.foodPct;
-    }
-    
-    return { 
-      averageAlcohol,
-      estimatedFoodAvg,
-      estimatedTotalAvg: averageAlcohol + estimatedFoodAvg,
-      nonZeroCount: nonZeroMonths.length,
-      config
-    };
+    const estimatedFoodAvg = config.alcoholPct > 0 ? (averageAlcohol / config.alcoholPct) * config.foodPct : 0;
+    return { averageAlcohol, estimatedFoodAvg, estimatedTotalAvg: averageAlcohol + estimatedFoodAvg, config };
   }, [selectedEstablishment, venueType]);
 
-  const pieData = useMemo(() => {
-    if (!stats) return [];
-    return [
-      { name: 'Alcohol', value: stats.averageAlcohol, color: '#A5B4FC' },
-      { name: 'Food', value: stats.estimatedFoodAvg, color: '#6EE7B7' }
-    ];
-  }, [stats]);
-
   return (
-    <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans p-4 md:p-8 selection:bg-indigo-500/30">
-      <header className="max-w-6xl mx-auto mb-10">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div>
-            <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tighter italic">
-              <BarChart3 className="text-indigo-400" size={36} /> RESTAURANT SCRAPER
-            </h1>
-            <p className="text-slate-400 font-medium uppercase tracking-widest text-[10px]">TX Comptroller Live Access</p>
-          </div>
-          <div className="flex bg-[#1E293B] p-1.5 rounded-2xl border border-slate-700 w-fit shadow-2xl">
-            <button 
-              onClick={() => setViewMode('search')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-black transition-all ${viewMode === 'search' ? 'bg-indigo-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}
-            >
-              <Search size={16} /> Search
-            </button>
-            <button 
-              onClick={() => setViewMode('top')}
-              className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-black transition-all ${viewMode === 'top' ? 'bg-indigo-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}
-            >
-              <Trophy size={16} /> Rankings
-            </button>
-          </div>
+    <div className="min-h-screen bg-[#0F172A] text-slate-100 font-sans p-4 md:p-8">
+      <header className="max-w-6xl mx-auto mb-10 flex flex-col md:flex-row justify-between items-center gap-6">
+        <div>
+          <h1 className="text-4xl font-black text-white flex items-center gap-3 tracking-tighter italic">
+            <BarChart3 className="text-indigo-400" size={36} /> RESTAURANT SCRAPER
+          </h1>
+          <p className="text-slate-400 font-medium uppercase tracking-widest text-[10px]">TX Comptroller Live Access</p>
+        </div>
+        <div className="flex bg-[#1E293B] p-1.5 rounded-2xl border border-slate-700 shadow-2xl">
+          <button onClick={() => setViewMode('search')} className={`px-6 py-2.5 rounded-xl text-sm font-black transition-all ${viewMode === 'search' ? 'bg-indigo-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}>
+            <Search size={16} className="inline mr-2"/> Search
+          </button>
+          <button onClick={() => setViewMode('top')} className={`px-6 py-2.5 rounded-xl text-sm font-black transition-all ${viewMode === 'top' ? 'bg-indigo-500 text-slate-900' : 'text-slate-400 hover:text-white'}`}>
+            <Trophy size={16} className="inline mr-2"/> Rankings
+          </button>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-8">
         <div className="lg:col-span-4 space-y-6">
           <section className="bg-[#1E293B] p-6 rounded-3xl border border-slate-700 shadow-xl">
-            {viewMode === 'search' ? (
-              <form onSubmit={handleSearch} className="space-y-4">
-                <h3 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2">Establishment Lookup</h3>
-                <div className="space-y-3">
-                  <div className="relative">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                    <input 
-                      type="text"
-                      placeholder="Name (e.g. Pappadeaux)"
-                      className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                    />
-                  </div>
-                  <div className="relative">
-                    <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                    <input 
-                      type="text"
-                      placeholder="City (Optional)"
-                      className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
-                      value={cityFilter}
-                      onChange={(e) => setCityFilter(e.target.value)}
-                    />
-                  </div>
-                </div>
-                <button 
-                  type="submit"
-                  disabled={loading || !searchTerm.trim()}
-                  className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-900 font-black py-4 rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
-                >
-                  {loading ? <Loader2 className="animate-spin" /> : 'Run Scraper'}
-                </button>
-              </form>
-            ) : (
-              <form onSubmit={handleTopAccountsSearch} className="space-y-4">
-                <h3 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2">City Leaderboard</h3>
+            <form onSubmit={viewMode === 'search' ? handleSearch : handleTopAccountsSearch} className="space-y-4">
+              <h3 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest">{viewMode === 'search' ? 'Establishment Lookup' : 'City Leaderboard'}</h3>
+              <div className="relative">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+                <input type="text" placeholder={viewMode === 'search' ? "Name (e.g. Pappadeaux)" : "Enter Texas City"} className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500" value={viewMode === 'search' ? searchTerm : topCitySearch} onChange={(e) => viewMode === 'search' ? setSearchTerm(e.target.value) : setTopCitySearch(e.target.value)} />
+              </div>
+              {viewMode === 'search' && (
                 <div className="relative">
                   <MapPin className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
-                  <input 
-                    type="text"
-                    placeholder="Enter Texas City"
-                    className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white focus:ring-2 focus:ring-indigo-500 outline-none transition-all font-medium"
-                    value={topCitySearch}
-                    onChange={(e) => setTopCitySearch(e.target.value)}
-                  />
+                  <input type="text" placeholder="City (Optional)" className="w-full pl-12 pr-4 py-3 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500" value={cityFilter} onChange={(e) => setCityFilter(e.target.value)} />
                 </div>
-                <button 
-                  type="submit"
-                  disabled={loading || !topCitySearch.trim()}
-                  className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-900 font-black py-4 rounded-2xl shadow-lg transition-all flex items-center justify-center gap-2 uppercase tracking-widest text-xs"
-                >
-                  {loading ? <Loader2 className="animate-spin" /> : 'Fetch Top 100'}
-                </button>
-              </form>
-            )}
-            
-            {error && (
-              <div className="mt-4 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-start gap-3">
-                <AlertTriangle className="text-red-400 shrink-0" size={16} />
-                <p className="text-[10px] text-red-200 font-bold uppercase">{error}</p>
-              </div>
-            )}
+              )}
+              <button type="submit" disabled={loading} className="w-full bg-indigo-500 hover:bg-indigo-400 text-slate-900 font-black py-4 rounded-2xl uppercase tracking-widest text-xs flex justify-center items-center gap-2">
+                {loading ? <Loader2 className="animate-spin" /> : 'Run Scraper'}
+              </button>
+            </form>
           </section>
 
           {viewMode === 'search' && results.length > 0 && (
             <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-              <h3 className="text-[10px] font-black text-slate-500 uppercase px-4 tracking-[0.2em]">Matches</h3>
-              {results.map((item) => (
-                <button
-                  key={`${item.taxpayer_number}-${item.location_number}`}
-                  onClick={() => analyzeLocation(item)}
-                  className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${
-                    selectedEstablishment?.info.location_number === item.location_number
-                    ? 'bg-indigo-500/10 border-indigo-500'
-                    : 'bg-[#1E293B] border-slate-700 hover:border-slate-500 shadow-md'
-                  }`}
-                >
-                  <div className="overflow-hidden">
-                    <h4 className="font-black text-slate-100 group-hover:text-indigo-300 transition-colors uppercase truncate">{item.location_name}</h4>
-                    <p className="text-[10px] text-slate-500 mt-1 uppercase font-bold tracking-tight truncate">
-                      {item.location_address}, {item.location_city}
-                    </p>
-                  </div>
-                  <ChevronRight size={18} className="text-slate-600 shrink-0" />
-                </button>
-              ))}
+              {results.map((item) => {
+                const active = isSelected(item);
+                return (
+                  <button 
+                    key={`${item.taxpayer_number}-${item.location_number}`} 
+                    onClick={() => analyzeLocation(item)} 
+                    className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between ${active ? 'bg-indigo-500 border-indigo-400 shadow-lg shadow-indigo-500/20 ring-2 ring-indigo-500/50' : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'}`}
+                  >
+                    <div className="truncate">
+                      <h4 className={`font-black uppercase truncate ${active ? 'text-slate-900' : 'text-slate-100'}`}>{item.location_name}</h4>
+                      <p className={`text-[10px] uppercase font-bold truncate ${active ? 'text-slate-900/70' : 'text-slate-500'}`}>
+                        {item.location_address}, {item.location_city}, TX
+                      </p>
+                    </div>
+                    <ChevronRight size={18} className={active ? 'text-slate-900' : 'text-slate-600'} />
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
 
         <div className="lg:col-span-8">
-          {viewMode === 'top' && topAccounts.length > 0 && (
-            <div className="bg-[#1E293B] rounded-[2rem] border border-slate-700 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500 shadow-2xl">
-              <div className="p-8 border-b border-slate-700 flex justify-between items-center bg-[#0F172A]/30">
-                <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase">Market Leaders: {topCitySearch}</h2>
-                <Trophy className="text-amber-400" size={32} />
+          {selectedEstablishment ? (
+            <div className="space-y-6">
+              <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2rem] border border-slate-700 shadow-2xl relative">
+                <div className="flex flex-col md:flex-row justify-between gap-8 mb-10">
+                  <div className="flex-1 space-y-6">
+                    <div>
+                      <span className="px-4 py-1 bg-indigo-500/10 text-indigo-400 rounded-full text-[10px] font-black uppercase border border-indigo-500/20 tracking-widest">{selectedEstablishment.info.tabc_permit_number || 'TABC ACTIVE'}</span>
+                      <h2 className="text-3xl md:text-5xl font-black text-white tracking-tighter uppercase italic mt-4">{selectedEstablishment.info.location_name}</h2>
+                      <p className="text-slate-400 flex items-center gap-2 mt-4 text-sm font-bold uppercase"><MapPin size={18} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}, TX</p>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="bg-[#0F172A]/40 p-5 rounded-2xl border border-slate-700">
+                        <div className="flex items-center gap-2 text-indigo-400 mb-2"><Building2 size={14} /><span className="text-[9px] font-black uppercase tracking-widest">Taxpayer Name</span></div>
+                        <p className="font-black text-slate-100 text-sm uppercase">{selectedEstablishment.info.taxpayer_name}</p>
+                      </div>
+                      <div className="bg-white p-6 rounded-2xl text-slate-900 shadow-xl flex flex-col justify-center border-b-4 border-indigo-500">
+                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Est. Combined Revenue</p>
+                        <p className="text-3xl font-black tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-[#0F172A]/40 rounded-3xl border border-slate-700/50 p-6 md:p-8">
+                  <div className="flex items-center justify-between mb-8">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-indigo-500 p-2 rounded-lg shadow-lg shadow-indigo-500/20">
+                            <Sparkles className="text-white" size={20} />
+                        </div>
+                        <div>
+                            <h3 className="text-xs font-black uppercase italic tracking-[0.2em] text-white">Live Intelligence Engine</h3>
+                            <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest">Deep Prospecting Data</p>
+                        </div>
+                    </div>
+                    {aiLoading && (
+                        <div className="flex items-center gap-2 text-indigo-400">
+                            <span className="text-[10px] font-black uppercase animate-pulse">Scanning...</span>
+                            <Loader2 size={14} className="animate-spin" />
+                        </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <div className="relative group">
+                        <div className="flex items-center gap-2 mb-4">
+                            <div className="w-1 h-4 bg-indigo-500 rounded-full"></div>
+                            <UserCheck size={14} className="text-indigo-400" />
+                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Owner & Leadership</span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-indigo-500/30 transition-all min-h-[100px]">
+                            {aiLoading ? (
+                                <div className="space-y-3"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
+                            ) : (
+                                <p className="text-xs text-slate-200 font-medium leading-relaxed">{aiContent?.owners}</p>
+                            )}
+                        </div>
+                    </div>
+                    <div className="relative group">
+                        <div className="flex items-center gap-2 mb-4">
+                            <div className="w-1 h-4 bg-emerald-500 rounded-full"></div>
+                            <Globe size={14} className="text-emerald-400" />
+                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Market Presence</span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-emerald-500/30 transition-all min-h-[100px]">
+                            {aiLoading ? (
+                                <div className="space-y-3"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
+                            ) : (
+                                <p className="text-xs text-slate-200 font-medium leading-relaxed">{aiContent?.locations}</p>
+                            )}
+                        </div>
+                    </div>
+                    <div className="relative group">
+                        <div className="flex items-center gap-2 mb-4">
+                            <div className="w-1 h-4 bg-amber-500 rounded-full"></div>
+                            <Target size={14} className="text-amber-400" />
+                            <span className="text-[10px] font-black uppercase tracking-[0.15em] text-slate-400">Account Deep-Dive</span>
+                        </div>
+                        <div className="bg-slate-900/50 rounded-2xl p-4 border border-slate-800 group-hover:border-amber-500/30 transition-all min-h-[100px]">
+                            {aiLoading ? (
+                                <div className="space-y-3"><div className="h-2 bg-slate-800 rounded w-full animate-pulse"></div><div className="h-2 bg-slate-800 rounded w-2/3 animate-pulse"></div></div>
+                            ) : (
+                                <p className="text-xs text-slate-200 font-medium leading-relaxed">{aiContent?.details}</p>
+                            )}
+                        </div>
+                    </div>
+                  </div>
+                </div>
               </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-20">
+                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-lg">
+                  <div className="flex items-center gap-3 mb-6 font-black uppercase italic text-sm tracking-widest"><Utensils className="text-indigo-400" /> Revenue Model</div>
+                  
+                  <div className="mb-6">
+                    <select 
+                      className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl p-4 text-xs font-black text-slate-200 uppercase italic outline-none transition-all hover:border-indigo-500/50" 
+                      value={venueType} 
+                      onChange={(e) => setVenueType(e.target.value)}
+                    >
+                      {Object.entries(VENUE_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+                    </select>
+                  </div>
+
+                  {/* Percentage Split Bar */}
+                  <div className="mb-8 space-y-3">
+                    <div className="flex justify-between text-[10px] font-black uppercase tracking-widest">
+                      <span className="text-emerald-400">Food {(stats.config.foodPct * 100).toFixed(0)}%</span>
+                      <span className="text-indigo-400">Alcohol {(stats.config.alcoholPct * 100).toFixed(0)}%</span>
+                    </div>
+                    <div className="h-3 w-full bg-[#0F172A] rounded-full overflow-hidden flex border border-slate-800">
+                      <div 
+                        className="h-full bg-emerald-500 transition-all duration-500 ease-out shadow-[0_0_15px_rgba(16,185,129,0.3)]" 
+                        style={{ width: `${stats.config.foodPct * 100}%` }}
+                      ></div>
+                      <div 
+                        className="h-full bg-indigo-500 transition-all duration-500 ease-out shadow-[0_0_15px_rgba(99,102,241,0.3)]" 
+                        style={{ width: `${stats.config.alcoholPct * 100}%` }}
+                      ></div>
+                    </div>
+                    <p className="text-[9px] text-slate-500 font-bold uppercase italic">{stats.config.desc}</p>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
+                      <p className="text-[9px] font-black text-indigo-400 uppercase tracking-widest">Alcohol Volume</p>
+                      <p className="text-xl font-black text-white italic">{formatCurrency(stats.averageAlcohol)}</p>
+                    </div>
+                    <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
+                      <p className="text-[9px] font-black text-emerald-400 uppercase tracking-widest">Food Est. (Calculated)</p>
+                      <p className="text-xl font-black text-white italic">{formatCurrency(stats.estimatedFoodAvg)}</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-xl">
+                    <div className="flex items-center justify-between mb-6">
+                        <h3 className="text-xs font-black uppercase italic tracking-widest">Beverage Split History</h3>
+                        <div className="flex gap-3 text-[8px] font-black uppercase tracking-tighter">
+                            <span className="flex items-center gap-1"><div className="w-2 h-2 bg-indigo-500 rounded-full"></div> Liquor</span>
+                            <span className="flex items-center gap-1"><div className="w-2 h-2 bg-indigo-300 rounded-full"></div> Beer</span>
+                            <span className="flex items-center gap-1"><div className="w-2 h-2 bg-emerald-500 rounded-full"></div> Wine</span>
+                        </div>
+                    </div>
+                    <div className="h-[200px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={selectedEstablishment.history} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                                <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 8, fill: '#64748b'}} axisLine={false} tickLine={false} />
+                                <Tooltip cursor={{fill: '#ffffff10'}} contentStyle={{backgroundColor: '#0F172A', border: '1px solid #334155', borderRadius: '12px', fontSize: '10px'}} formatter={(value) => formatCurrency(value)} />
+                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" radius={[0, 0, 0, 0]} />
+                                <Bar dataKey="beer" stackId="a" fill="#818cf8" radius={[0, 0, 0, 0]} />
+                                <Bar dataKey="wine" stackId="a" fill="#10b981" radius={[4, 4, 0, 0]} />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="h-[600px] flex flex-col items-center justify-center text-center space-y-6 bg-[#1E293B]/20 rounded-[3rem] border border-dashed border-slate-700">
+               <div className="w-24 h-24 bg-indigo-500/10 rounded-full flex items-center justify-center mb-4">
+                  <FileSearch size={48} className="text-indigo-400" />
+               </div>
+               <div>
+                  <h2 className="text-2xl font-black text-white uppercase italic tracking-tight">System Ready</h2>
+                  <p className="text-slate-400 max-w-sm mt-2 font-medium">Search for a Texas establishment or browse rankings to begin intelligence collection.</p>
+               </div>
+            </div>
+          )}
+          
+          {viewMode === 'top' && topAccounts.length > 0 && (
+            <div className="bg-[#1E293B] rounded-[2rem] border border-slate-700 overflow-hidden shadow-2xl mt-12">
+              <div className="p-8 border-b border-slate-700 flex justify-between items-center bg-[#0F172A]/30 font-black text-white italic uppercase tracking-tighter">Market Leaders: {topCitySearch} <Trophy className="text-amber-400" /></div>
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm">
+                <table className="w-full text-left">
                   <thead className="bg-[#0F172A]/50 text-[10px] uppercase font-black text-slate-500 tracking-widest">
                     <tr>
-                      <th className="px-8 py-4">Rank</th>
-                      <th className="px-6 py-4">Name</th>
-                      <th className="px-6 py-4">Address</th>
-                      <th className="px-8 py-4 text-right">Avg Mo. Sales</th>
+                      <th className="p-6">Rank</th>
+                      <th className="p-6">Establishment & Address</th>
+                      <th className="p-6 text-right">Avg Mo. Sales</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-800">
-                    {topAccounts.map((account, index) => (
-                      <tr key={index} onClick={() => analyzeLocation(account)} className="hover:bg-indigo-500/5 transition-all cursor-pointer group">
-                        <td className="px-8 py-5">
-                          <span className={`inline-flex items-center justify-center w-7 h-7 rounded-full font-black text-[10px] ${index < 3 ? 'bg-amber-400 text-slate-900' : 'bg-slate-800 text-slate-400'}`}>
-                            {index + 1}
-                          </span>
-                        </td>
-                        <td className="px-6 py-5 font-black text-slate-200 uppercase italic group-hover:text-indigo-400">{account.location_name}</td>
-                        <td className="px-6 py-5 text-slate-500 text-[10px] font-bold uppercase">{account.location_address}</td>
-                        <td className="px-8 py-5 font-black text-white text-right">{formatCurrency(account.avg_monthly_volume)}</td>
-                      </tr>
-                    ))}
+                    {topAccounts.map((account, index) => {
+                      const active = isSelected(account);
+                      return (
+                        <tr 
+                          key={index} 
+                          onClick={() => analyzeLocation(account)} 
+                          className={`cursor-pointer transition-all group ${active ? 'bg-indigo-500/20' : 'hover:bg-indigo-500/5'}`}
+                        >
+                          <td className="p-6">
+                            <div className="flex items-center gap-3">
+                              {active && <div className="w-1.5 h-6 bg-indigo-400 rounded-full animate-pulse shadow-glow shadow-indigo-500/50"></div>}
+                              <span className={`w-7 h-7 flex items-center justify-center rounded-full font-black text-[10px] ${index < 3 ? 'bg-amber-400 text-slate-900 shadow-lg shadow-amber-400/20' : 'bg-slate-800 text-slate-400'} ${active ? 'ring-2 ring-indigo-400 ring-offset-2 ring-offset-[#1E293B]' : ''}`}>
+                                {index+1}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="p-6">
+                            <div className="flex flex-col">
+                              <span className={`font-black uppercase italic text-sm transition-colors ${active ? 'text-indigo-400' : 'text-slate-100 group-hover:text-indigo-400'}`}>
+                                {account.location_name}
+                              </span>
+                              <span className={`text-[10px] font-bold uppercase tracking-tight flex items-center gap-1 mt-1 ${active ? 'text-indigo-300/70' : 'text-slate-500'}`}>
+                                <MapPin size={10} className={active ? 'text-indigo-400' : 'text-slate-600'} /> {account.location_address}, {account.location_city}, TX
+                              </span>
+                            </div>
+                          </td>
+                          <td className="p-6 text-right">
+                            <div className="flex flex-col items-end">
+                              <span className={`font-black text-base tracking-tighter ${active ? 'text-indigo-400' : 'text-white'}`}>{formatCurrency(account.avg_monthly_volume)}</span>
+                              <span className={`text-[9px] font-black uppercase ${active ? 'text-indigo-300/50' : 'text-slate-500'}`}>Volume / Mo</span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
-            </div>
-          )}
-
-          {viewMode === 'search' && selectedEstablishment && (
-            <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-20">
-              <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2rem] border border-slate-700 shadow-2xl relative overflow-hidden">
-                <div className="flex flex-col md:flex-row justify-between gap-8 relative z-10">
-                  <div className="space-y-6 flex-1">
-                    <div>
-                      <span className="inline-block px-4 py-1.5 bg-indigo-500/10 text-indigo-400 rounded-full text-[10px] font-black mb-4 uppercase tracking-[0.2em] border border-indigo-500/20">
-                        {selectedEstablishment.info.tabc_permit_number || 'TABC ACTIVE'}
-                      </span>
-                      <h2 className="text-3xl md:text-5xl font-black text-white tracking-tighter uppercase italic">{selectedEstablishment.info.location_name}</h2>
-                      <p className="text-slate-400 flex items-center gap-2 mt-4 text-sm font-bold uppercase tracking-wide">
-                        <MapPin size={18} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}, TX
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-8 border-t border-slate-700/50">
-                      <div className="bg-[#0F172A]/40 p-6 rounded-[1.5rem] border border-slate-700">
-                        <div className="flex items-center gap-2 text-indigo-400 mb-3">
-                          <Building2 size={16} />
-                          <span className="text-[9px] font-black uppercase tracking-widest">Parent Entity</span>
-                        </div>
-                        <p className="font-black text-slate-100 text-lg uppercase leading-tight">{selectedEstablishment.info.taxpayer_name}</p>
-                        <div className="mt-4 flex items-center justify-between opacity-60">
-                          <p className="text-[9px] font-mono tracking-widest">ID: {selectedEstablishment.info.taxpayer_number}</p>
-                        </div>
-                      </div>
-
-                      <div className="bg-gradient-to-br from-indigo-500/10 to-transparent p-6 rounded-[1.5rem] border border-indigo-500/30 shadow-xl relative group min-h-[140px]">
-                        <div className="flex items-center justify-between mb-4">
-                          <div className="flex items-center gap-2 text-indigo-300">
-                            <Sparkles size={16} />
-                            <span className="text-[9px] font-black uppercase tracking-widest">
-                              {aiIsFallback ? 'Data Interpretation' : 'Live Intelligence'}
-                            </span>
-                          </div>
-                          {aiLoading ? (
-                            <Loader2 size={14} className="animate-spin text-indigo-400" />
-                          ) : (
-                            <div className="flex gap-2">
-                                {aiIsFallback && <Info size={14} className="text-amber-400" />}
-                                <CheckCircle2 size={14} className="text-emerald-400" />
-                            </div>
-                          )}
-                        </div>
-                        
-                        <div className="space-y-4">
-                          {aiResponse ? (
-                            <div className="animate-in fade-in slide-in-from-top-2 duration-300">
-                              <div className="text-xs font-medium text-slate-300 leading-relaxed whitespace-pre-wrap">
-                                {aiResponse}
-                              </div>
-                              {groundingSources.length > 0 && (
-                                <div className="mt-4 pt-3 border-t border-slate-700/50 flex flex-wrap gap-2">
-                                  {groundingSources.slice(0, 2).map((source, i) => (
-                                    <a key={i} href={source.uri} target="_blank" rel="noreferrer" className="text-[8px] bg-slate-800 px-2 py-1 rounded text-indigo-300 truncate max-w-[120px] hover:bg-slate-700 flex items-center gap-1">
-                                      <ExternalLink size={8} /> {source.title || 'Source'}
-                                    </a>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div className="flex flex-col items-center justify-center py-4 text-center">
-                              <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest mb-1">Scanning Market Data</p>
-                              <div className="w-full bg-slate-800 h-1 rounded-full overflow-hidden mt-2">
-                                <div className="bg-indigo-500 h-full animate-pulse w-2/3"></div>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="bg-white p-8 rounded-[2rem] text-center md:text-right text-slate-900 shadow-2xl min-w-full md:min-w-[260px] flex flex-col justify-center border-b-8 border-indigo-400">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Estimated Avg. Revenue</p>
-                    <p className="text-4xl md:text-5xl font-black tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
-                    <p className="text-[9px] mt-4 font-black text-indigo-500 uppercase tracking-widest">Monthly Projection</p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 flex flex-col shadow-lg">
-                  <div className="flex items-center gap-3 mb-8">
-                    <Utensils className="text-indigo-400" />
-                    <h3 className="text-sm font-black uppercase italic tracking-widest">Projection Model</h3>
-                  </div>
-                  
-                  <div className="space-y-6 flex-1">
-                    <div>
-                      <label className="text-[9px] font-black uppercase text-slate-500 block mb-3 tracking-widest">Establishment Type</label>
-                      <select 
-                        className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl px-5 py-4 text-xs font-black text-slate-200 outline-none uppercase italic focus:ring-2 focus:ring-indigo-500 transition-all cursor-pointer"
-                        value={venueType}
-                        onChange={(e) => setVenueType(e.target.value)}
-                      >
-                        {Object.entries(VENUE_TYPES).map(([key, val]) => (
-                          <option key={key} value={key}>{val.label}</option>
-                        ))}
-                      </select>
-                      <p className="text-[11px] text-indigo-300 mt-4 font-bold italic opacity-80">{stats.config.desc}</p>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
-                        <p className="text-[9px] font-black text-indigo-400 uppercase mb-1">Alcohol</p>
-                        <p className="text-xl font-black text-white italic">{formatCurrency(stats.averageAlcohol)}</p>
-                      </div>
-                      <div className="bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
-                        <p className="text-[9px] font-black text-emerald-400 uppercase mb-1">Food (Est)</p>
-                        <p className="text-xl font-black text-white italic">{formatCurrency(stats.estimatedFoodAvg)}</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 h-[350px] flex flex-col items-center justify-center relative shadow-lg">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={pieData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={70}
-                        outerRadius={95}
-                        paddingAngle={5}
-                        dataKey="value"
-                      >
-                        {pieData.map((entry, index) => <Cell key={index} fill={entry.color} strokeWidth={0} />)}
-                      </Pie>
-                      <Tooltip 
-                        contentStyle={{backgroundColor: '#0F172A', borderRadius: '12px', border: '1px solid #334155', fontSize: '12px'}}
-                      />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="absolute flex flex-col items-center pointer-events-none">
-                    <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Revenue Mix</span>
-                    <span className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="bg-[#1E293B] p-8 rounded-[2rem] border border-slate-700 shadow-xl">
-                <h3 className="text-sm font-black text-white uppercase italic tracking-widest mb-10">Alcohol Sales Volume (Last 12 Months)</h3>
-                <div className="h-[300px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={selectedEstablishment.history} margin={{top: 10, right: 10, left: -20, bottom: 0}}>
-                      <CartesianGrid strokeDasharray="4 4" vertical={false} stroke="#334155" />
-                      <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 9, fill: '#64748b', fontWeight: 'bold'}} axisLine={false} tickLine={false} />
-                      <YAxis tickFormatter={(v) => `$${v >= 1000 ? (v/1000).toFixed(0) + 'k' : v}`} tick={{fontSize: 9, fill: '#64748b', fontWeight: 'bold'}} axisLine={false} tickLine={false} />
-                      <Tooltip contentStyle={{backgroundColor: '#0F172A', borderRadius: '12px', border: '1px solid #334155'}} />
-                      <Legend verticalAlign="top" align="right" iconType="circle" wrapperStyle={{paddingBottom: '20px', fontSize: '10px', textTransform: 'uppercase', fontWeight: 'bold'}} />
-                      <Bar name="Liquor" dataKey="liquor_receipts" stackId="a" fill="#A5B4FC" />
-                      <Bar name="Wine" dataKey="wine_receipts" stackId="a" fill="#F9A8D4" />
-                      <Bar name="Beer" dataKey="beer_receipts" stackId="a" fill="#FDE047" radius={[4, 4, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </div>
-          )}
-          
-          {!selectedEstablishment && !loading && (
-            <div className="h-[500px] flex flex-col items-center justify-center bg-[#1E293B]/30 rounded-[2.5rem] border-2 border-dashed border-slate-800 text-slate-600 text-center p-10">
-              <Zap size={48} className="mb-6 opacity-20" />
-              <h3 className="text-xl font-black italic uppercase tracking-tighter">System Idle</h3>
-              <p className="max-w-xs mt-2 text-xs font-bold uppercase tracking-widest opacity-40">Search and select an establishment to initialize intelligence modules</p>
-            </div>
-          )}
-          
-          {loading && (
-            <div className="h-[500px] flex flex-col items-center justify-center animate-pulse">
-              <Loader2 className="animate-spin text-indigo-400 mb-4" size={48} />
-              <p className="text-indigo-300 font-black tracking-[0.3em] uppercase text-[10px]">Accessing TABC Cloud Records...</p>
             </div>
           )}
         </div>
