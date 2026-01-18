@@ -16,7 +16,9 @@ import {
   Settings,
   X,
   TrendingUp,
-  PieChart as PieIcon
+  PieChart as PieIcon,
+  Database,
+  CheckCircle2
 } from 'lucide-react';
 import {
   BarChart,
@@ -31,7 +33,6 @@ import {
 // Fallback for environment variables to support different build targets
 const getApiKey = () => {
   try {
-    // Vite/Vercel standard
     if (import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
       return import.meta.env.VITE_GEMINI_API_KEY;
     }
@@ -72,6 +73,9 @@ const App = () => {
   const [error, setError] = useState(null);
   const [venueType, setVenueType] = useState('casual_dining');
   
+  // Storage State
+  const [saveStatus, setSaveStatus] = useState('idle'); // idle, saving, success, error
+
   // Intelligence Engine State
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -96,12 +100,39 @@ const App = () => {
            selectedEstablishment.info.location_number === item.location_number;
   };
 
-  // GEMINI API WITH EXPONENTIAL BACKOFF
-  const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
-    if (!API_KEY) {
-      throw new Error("API Key missing. Please check Vercel ENV settings for VITE_GEMINI_API_KEY.");
+  // Neon Storage Integration Function
+  const saveToNeon = async (establishment, stats) => {
+    setSaveStatus('saving');
+    try {
+      // This calls the bridge we created in api/save-scrape.js
+      const response = await fetch('/api/save-scrape', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: establishment.location_name,
+          address: establishment.location_address,
+          city: establishment.location_city,
+          taxpayer: establishment.taxpayer_name,
+          alc_avg: stats.averageAlcohol,
+          est_total: stats.estimatedTotalAvg,
+          venue_type: venueType
+        })
+      });
+
+      if (!response.ok) throw new Error('Database write failed');
+      
+      setSaveStatus('success');
+      // Reset button after 3 seconds
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (err) {
+      console.error("Storage Error:", err);
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
     }
-    
+  };
+
+  const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
+    if (!API_KEY) throw new Error("API Key missing.");
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
         method: 'POST',
@@ -112,7 +143,6 @@ const App = () => {
           tools: [{ "google_search": {} }]
         })
       });
-
       if (!response.ok) {
         if (retries > 0 && (response.status === 429 || response.status >= 500)) {
           await new Promise(resolve => setTimeout(resolve, delay));
@@ -120,7 +150,6 @@ const App = () => {
         }
         throw new Error(`API Error: ${response.status}`);
       }
-
       const result = await response.json();
       return result.candidates?.[0]?.content?.parts?.[0]?.text;
     } catch (err) {
@@ -136,24 +165,14 @@ const App = () => {
     const businessName = establishment.location_name;
     const city = establishment.location_city;
     const taxpayer = establishment.taxpayer_name;
-    
-    setAiLoading(true);
-    setAiResponse(null);
-    
+    setAiLoading(true); setAiResponse(null);
     try {
-      const userQuery = `Find the individual owners or executive management for "${businessName}" in ${city}, TX. Look specifically for the people behind the LLC "${taxpayer}". 
-      Format exactly:
-      OWNERS: [Names]
-      LOCATION COUNT: [Units]
-      ACCOUNT DETAILS: [Quick summary of their market position]`;
-
+      const userQuery = `Find the individual owners or executive management for "${businessName}" in ${city}, TX. Look specifically for the people behind the LLC "${taxpayer}". Format as OWNERS: ..., LOCATION COUNT: ..., ACCOUNT DETAILS: ...`;
       const text = await callGeminiWithRetry(userQuery);
       setAiResponse(text || "No data returned.");
     } catch (err) { 
-      setAiResponse(`OWNERS: Data unavailable\nLOCATION COUNT: Connection Error\nACCOUNT DETAILS: ${err.message || "Multiple connection attempts failed."}`); 
-    } finally { 
-      setAiLoading(false); 
-    }
+      setAiResponse(`OWNERS: Data unavailable\nLOCATION COUNT: Connection Error\nACCOUNT DETAILS: ${err.message}`); 
+    } finally { setAiLoading(false); }
   };
 
   const handleSearch = async (e) => {
@@ -163,8 +182,15 @@ const App = () => {
     try {
       const cleanSearch = searchTerm.trim().toUpperCase();
       const cleanCity = cityFilter.trim().toUpperCase();
-      let whereClause = `upper(location_name) like '%${cleanSearch}%'`;
+      
+      const isLikelyAddress = /\d/.test(cleanSearch);
+      
+      let whereClause = isLikelyAddress 
+        ? `(upper(location_name) like '%${cleanSearch}%' OR upper(location_address) like '%${cleanSearch}%')`
+        : `upper(location_name) like '%${cleanSearch}%'`;
+        
       if (cleanCity) whereClause += ` AND upper(location_city) = '${cleanCity}'`;
+      
       const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=100`;
       const response = await fetch(BASE_URL + query);
       const data = await response.json();
@@ -183,26 +209,23 @@ const App = () => {
     if (!topCitySearch.trim()) return;
     setLoading(true); setTopAccounts([]); setError(null);
     try {
-      const city = topCitySearch.trim().toUpperCase();
+      const input = topCitySearch.trim().toUpperCase();
+      const isZip = /^\d{5}$/.test(input);
       const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
       const dateString = oneYearAgo.toISOString().split('T')[0] + "T00:00:00.000";
-      
+      const locationCondition = isZip ? `location_zip = '${input}'` : `upper(location_city) = '${input}'`;
       const query = `?$select=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
-                    `&$where=upper(location_city) = '${city}' AND ${DATE_FIELD} > '${dateString}'` +
+                    `&$where=${locationCondition} AND ${DATE_FIELD} > '${dateString}'` +
                     `&$group=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number` +
                     `&$order=annual_sales DESC&$limit=100`;
-      
       const response = await fetch(BASE_URL + query);
       const data = await response.json();
-      
       setTopAccounts(data.map(account => ({
         ...account,
         annual_sales: parseFloat(account.annual_sales),
         avg_monthly_volume: parseFloat(account.annual_sales) / (parseInt(account.months_count) || 12)
       })));
-    } catch (err) { 
-      setError("Ranking engine timeout or invalid city."); 
-    } finally { setLoading(false); }
+    } catch (err) { setError("Ranking engine error."); } finally { setLoading(false); }
   };
 
   const analyzeLocation = async (establishment) => {
@@ -233,11 +256,9 @@ const App = () => {
     const ownerMatch = normalized.match(/OWNERS:([\s\S]*?)(?=LOCATION COUNT:|$)/i);
     const locationMatch = normalized.match(/LOCATION COUNT:([\s\S]*?)(?=ACCOUNT DETAILS:|$)/i);
     const detailMatch = normalized.match(/ACCOUNT DETAILS:([\s\S]*?)$/i);
-    
     if (ownerMatch) sections.owners = ownerMatch[1].trim();
     if (locationMatch) sections.locations = locationMatch[1].trim();
     if (detailMatch) sections.details = detailMatch[1].trim();
-    
     return sections;
   }, [aiResponse]);
 
@@ -246,16 +267,9 @@ const App = () => {
     const history = selectedEstablishment.history;
     const nonZeroMonths = history.filter(m => m.alcohol_total > 0);
     const averageAlcohol = nonZeroMonths.length > 0 ? (nonZeroMonths.reduce((sum, m) => sum + m.alcohol_total, 0) / nonZeroMonths.length) : 0;
-    
     const config = VENUE_TYPES[venueType];
     const estimatedFoodAvg = config.alcoholPct > 0 ? (averageAlcohol / config.alcoholPct) * config.foodPct : 0;
-
-    return { 
-      averageAlcohol, 
-      estimatedFoodAvg, 
-      estimatedTotalAvg: averageAlcohol + estimatedFoodAvg, 
-      config
-    };
+    return { averageAlcohol, estimatedFoodAvg, estimatedTotalAvg: averageAlcohol + estimatedFoodAvg, config };
   }, [selectedEstablishment, venueType]);
 
   return (
@@ -290,14 +304,14 @@ const App = () => {
             <form onSubmit={viewMode === 'search' ? handleSearch : handleTopAccountsSearch} className="space-y-4">
               <h3 className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-2 flex items-center gap-2">
                 <div className="w-1 h-1 bg-indigo-500 rounded-full animate-pulse"></div>
-                {viewMode === 'search' ? 'Establishment Search' : 'City Ranking Scrape'}
+                {viewMode === 'search' ? 'Name or Address Search' : 'City/Zip Ranking Scrape'}
               </h3>
               <div className="space-y-3">
                 <div className="relative">
                   <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
                   <input 
                     type="text" 
-                    placeholder={viewMode === 'search' ? "Restaurant Name..." : "Texas City (e.g. Austin)..."} 
+                    placeholder={viewMode === 'search' ? "Name or Street Address..." : "TX City or Zip Code..."} 
                     className="w-full pl-12 pr-4 py-3.5 rounded-2xl bg-[#0F172A] border border-slate-700 text-white outline-none focus:ring-2 focus:ring-indigo-500 transition-all uppercase" 
                     value={viewMode === 'search' ? searchTerm : topCitySearch} 
                     onChange={(e) => viewMode === 'search' ? setSearchTerm(e.target.value.toUpperCase()) : setTopCitySearch(e.target.value.toUpperCase())} 
@@ -334,7 +348,7 @@ const App = () => {
                     {viewMode === 'top' && <span className={`text-[10px] font-black w-6 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>{idx + 1}</span>}
                     <div className="truncate">
                       <h4 className={`font-black uppercase truncate text-sm italic tracking-tight ${isSelected(item) ? 'text-slate-900' : 'text-slate-100 group-hover:text-indigo-400'}`}>{item.location_name}</h4>
-                      <p className={`text-[9px] uppercase font-bold truncate mt-0.5 ${isSelected(item) ? 'text-slate-900/70' : 'text-slate-500'}`}>{item.location_city}</p>
+                      <p className={`text-[9px] uppercase font-bold truncate mt-0.5 ${isSelected(item) ? 'text-slate-900/70' : 'text-slate-500'}`}>{item.location_address}, {item.location_city}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
@@ -361,13 +375,30 @@ const App = () => {
                     <h2 className="text-3xl md:text-5xl font-black text-white tracking-tighter uppercase italic leading-none">{selectedEstablishment.info.location_name}</h2>
                     <p className="text-slate-400 flex items-center gap-2 mt-5 text-[11px] font-bold uppercase tracking-widest"><MapPin size={16} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}</p>
                   </div>
-                  
-                  <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10 shrink-0 min-w-[220px]">
-                    <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
-                    <p className="text-4xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
+                  <div className="flex flex-col gap-3 shrink-0 min-w-[220px]">
+                    <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10">
+                      <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
+                      <p className="text-4xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
+                    </div>
+                    {/* Database Save Button */}
+                    <button 
+                      onClick={() => saveToNeon(selectedEstablishment.info, stats)}
+                      disabled={saveStatus === 'saving'}
+                      className={`w-full py-3 rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all ${
+                        saveStatus === 'success' ? 'bg-emerald-500 text-white' : 
+                        saveStatus === 'error' ? 'bg-red-500 text-white' : 
+                        'bg-slate-700 hover:bg-slate-600 text-slate-300'
+                      }`}
+                    >
+                      {saveStatus === 'saving' ? <Loader2 className="animate-spin" size={14} /> : 
+                       saveStatus === 'success' ? <CheckCircle2 size={14} /> :
+                       <Database size={14} />}
+                      {saveStatus === 'saving' ? 'Archiving...' : 
+                       saveStatus === 'success' ? 'Saved to Neon' :
+                       saveStatus === 'error' ? 'Storage Error' : 'Push to Storage'}
+                    </button>
                   </div>
                 </div>
-
                 <div className="bg-[#0F172A]/60 rounded-[2rem] border border-slate-700/50 p-6 md:p-8 mt-10 relative z-10">
                   <div className="flex items-center gap-3 mb-8">
                     <div className="bg-indigo-500 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20">
@@ -375,7 +406,6 @@ const App = () => {
                     </div>
                     <h3 className="text-[11px] font-black uppercase italic tracking-[0.2em] text-white">Owner Intelligence Engine</h3>
                   </div>
-
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-start">
                     <div className="bg-slate-900/80 rounded-2xl p-5 border border-slate-800 h-full min-h-[140px]">
                       <div className="flex items-center gap-2 mb-3"><UserCheck size={14} className="text-indigo-400" /><span className="text-[9px] font-black uppercase tracking-[0.15em] text-slate-500">Ownership</span></div>
@@ -399,7 +429,6 @@ const App = () => {
                   <select className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl p-4 text-[10px] font-black text-slate-200 uppercase italic outline-none mb-6 appearance-none cursor-pointer" value={venueType} onChange={(e) => setVenueType(e.target.value)}>
                     {Object.entries(VENUE_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
                   </select>
-
                   <div className="bg-[#0F172A]/40 rounded-2xl p-4 mb-6 border border-slate-800 flex items-center justify-between">
                     <div className="flex flex-col gap-1">
                       <span className="text-[8px] font-black uppercase tracking-widest text-slate-500">Split Ratio</span>
@@ -407,7 +436,6 @@ const App = () => {
                     </div>
                     <PieIcon size={18} className="text-indigo-400 opacity-50" />
                   </div>
-
                   <div className="grid grid-cols-1 gap-3">
                     <div className="flex gap-3">
                         <div className="flex-1 bg-[#0F172A]/50 p-5 rounded-2xl border border-slate-800">
@@ -419,35 +447,22 @@ const App = () => {
                             <p className="text-xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedFoodAvg)}</p>
                         </div>
                     </div>
-                    <div className="bg-[#0F172A] p-5 rounded-2xl border-2 border-indigo-500/30">
-                        <p className="text-[9px] font-black text-indigo-300 uppercase tracking-widest mb-1">Estimated Total GPV</p>
-                        <p className="text-2xl font-black text-white italic tracking-tighter">{formatCurrency(stats.estimatedTotalAvg)}</p>
-                    </div>
                   </div>
                 </div>
-
                 <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700">
-                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Alcohol Sales (Liquor/Beer/Wine)</h3>
+                    <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Alcohol Sales</h3>
                     <div className="h-[220px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={selectedEstablishment.history} margin={{ left: -20 }}>
                                 <CartesianGrid vertical={false} stroke="#ffffff05" />
                                 <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
                                 <YAxis tickFormatter={formatCurrency} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
-                                <Tooltip 
-                                    contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}}
-                                    formatter={(value) => [formatCurrency(value), ""]}
-                                />
-                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" name="Liquor" />
-                                <Bar dataKey="beer" stackId="a" fill="#fbbf24" name="Beer" />
-                                <Bar dataKey="wine" stackId="a" fill="#ec4899" name="Wine" />
+                                <Tooltip contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}} formatter={(value) => [formatCurrency(value), ""]} />
+                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" />
+                                <Bar dataKey="beer" stackId="a" fill="#fbbf24" />
+                                <Bar dataKey="wine" stackId="a" fill="#ec4899" />
                             </BarChart>
                         </ResponsiveContainer>
-                    </div>
-                    <div className="flex justify-center gap-4 mt-6">
-                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#6366f1] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Liquor</span></div>
-                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#fbbf24] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Beer</span></div>
-                        <div className="flex items-center gap-2"><div className="w-2.5 h-2.5 bg-[#ec4899] rounded-full"></div><span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Wine</span></div>
                     </div>
                 </div>
               </div>
@@ -456,7 +471,7 @@ const App = () => {
             <div className="h-[600px] flex flex-col items-center justify-center text-center bg-[#1E293B]/20 rounded-[3rem] border border-dashed border-slate-700">
                <Search size={40} className="text-indigo-400 opacity-20 mb-4" />
                <h2 className="text-xl font-black text-white uppercase italic tracking-tighter">System Idle</h2>
-               <p className="text-slate-500 font-bold uppercase text-[10px] tracking-widest mt-2">Search or run a City Ranking to begin</p>
+               <p className="text-slate-500 font-bold uppercase text-[10px] tracking-widest mt-2">Search Name/Address or run a City/Zip Ranking</p>
             </div>
           )}
         </div>
