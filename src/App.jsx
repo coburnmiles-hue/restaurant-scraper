@@ -13,12 +13,7 @@ import {
   UserCheck,
   Globe,
   TrendingUp,
-  PieChart as PieIcon,
-  Database,
-  CheckCircle2,
-  MessageSquare,
-  Calendar,
-  Plus
+  PieChart as PieIcon
 } from 'lucide-react';
 import {
   BarChart,
@@ -27,33 +22,11 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  Legend,
   ResponsiveContainer
 } from 'recharts';
 
-// Firebase Imports
-import { initializeApp } from 'firebase/app';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  addDoc, 
-  onSnapshot, 
-  query, 
-  serverTimestamp 
-} from 'firebase/firestore';
-import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-
-// --- Version Control ---
-const APP_VERSION = "v1.1.1";
-
-// --- Firebase Initialization ---
-const firebaseConfig = JSON.parse(__firebase_config);
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'restaurant-intel-app';
+// The environment provides the API key via an empty string that is populated at runtime
+const API_KEY = "";
 
 // Dataset Configuration
 const DATASET_ID = 'naix-2893';
@@ -73,7 +46,6 @@ const VENUE_TYPES = {
 };
 
 const App = () => {
-  const [user, setUser] = useState(null);
   const [viewMode, setViewMode] = useState('search'); 
   const [searchTerm, setSearchTerm] = useState('');
   const [cityFilter, setCityFilter] = useState('');
@@ -85,46 +57,9 @@ const App = () => {
   const [error, setError] = useState(null);
   const [venueType, setVenueType] = useState('casual_dining');
   
-  // Storage State
-  const [saveStatus, setSaveStatus] = useState('idle');
-  const [notes, setNotes] = useState([]);
-  const [newNote, setNewNote] = useState('');
-
   // Intelligence Engine State
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
-
-  // 1. Auth Init
-  useEffect(() => {
-    const initAuth = async () => {
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
-    };
-    initAuth();
-    const unsubscribe = onAuthStateChanged(auth, setUser);
-    return () => unsubscribe();
-  }, []);
-
-  // 2. Fetch Notes for Selected Account
-  useEffect(() => {
-    if (!user || !selectedEstablishment) return;
-    
-    const accountId = `${selectedEstablishment.info.taxpayer_number}-${selectedEstablishment.info.location_number}`;
-    const notesRef = collection(db, 'artifacts', appId, 'public', 'data', 'notes');
-    
-    const unsubscribe = onSnapshot(notesRef, (snapshot) => {
-      const allNotes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      const accountNotes = allNotes
-        .filter(n => n.accountId === accountId)
-        .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-      setNotes(accountNotes);
-    }, (err) => console.error("Notes fetch error:", err));
-
-    return () => unsubscribe();
-  }, [user, selectedEstablishment]);
 
   const formatCurrency = (val) => {
     const num = parseFloat(val);
@@ -146,65 +81,14 @@ const App = () => {
            selectedEstablishment.info.location_number === item.location_number;
   };
 
-  // Push to Cloud
-  const saveToCloud = async (establishment, stats) => {
-    if (!user) return;
-    setSaveStatus('saving');
-    try {
-      const accountId = `${establishment.taxpayer_number}-${establishment.location_number}`;
-      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'saved_accounts', accountId);
-      
-      await setDoc(docRef, {
-        name: establishment.location_name,
-        address: establishment.location_address,
-        city: establishment.location_city,
-        taxpayer: establishment.taxpayer_name,
-        alc_avg: stats.averageAlcohol,
-        est_total: stats.estimatedTotalAvg,
-        venue_type: venueType,
-        last_updated: serverTimestamp(),
-        saved_by: user.uid
-      });
-
-      setSaveStatus('success');
-      setTimeout(() => setSaveStatus('idle'), 3000);
-    } catch (err) {
-      console.error("Storage Error:", err);
-      setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 3000);
-    }
-  };
-
-  const addNote = async () => {
-    if (!user || !newNote.trim() || !selectedEstablishment) return;
-    
-    try {
-      const accountId = `${selectedEstablishment.info.taxpayer_number}-${selectedEstablishment.info.location_number}`;
-      const notesRef = collection(db, 'artifacts', appId, 'public', 'data', 'notes');
-      
-      await addDoc(notesRef, {
-        accountId,
-        text: newNote,
-        userId: user.uid,
-        createdAt: serverTimestamp(),
-        dateLabel: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-      });
-      
-      setNewNote('');
-    } catch (err) {
-      console.error("Error adding note:", err);
-    }
-  };
-
   const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
-    const apiKey = ""; 
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          systemInstruction: { parts: [{ text: "You are a business intelligence assistant specialized in the Texas hospitality market." }] },
+          systemInstruction: { parts: [{ text: "You are a business intelligence assistant specialized in the Texas hospitality market. Search for real-world ownership data." }] },
           tools: [{ "google_search": {} }]
         })
       });
@@ -230,14 +114,17 @@ const App = () => {
     const businessName = establishment.location_name;
     const city = establishment.location_city;
     const taxpayer = establishment.taxpayer_name;
-    setAiLoading(true); setAiResponse(null);
+    setAiLoading(true); 
+    setAiResponse(null);
     try {
       const userQuery = `Find the individual owners or executive management for "${businessName}" in ${city}, TX. Look specifically for the people behind the LLC "${taxpayer}". Format as OWNERS: ..., LOCATION COUNT: ..., ACCOUNT DETAILS: ...`;
       const text = await callGeminiWithRetry(userQuery);
       setAiResponse(text || "No data returned.");
     } catch (err) { 
       setAiResponse(`OWNERS: Data unavailable\nLOCATION COUNT: Connection Error\nACCOUNT DETAILS: ${err.message}`); 
-    } finally { setAiLoading(false); }
+    } finally { 
+      setAiLoading(false); 
+    }
   };
 
   const handleSearch = async (e) => {
@@ -247,10 +134,17 @@ const App = () => {
     try {
       const cleanSearch = searchTerm.trim().toUpperCase();
       const cleanCity = cityFilter.trim().toUpperCase();
-      let whereClause = `upper(location_name) like '%${cleanSearch}%' OR upper(location_address) like '%${cleanSearch}%'`;
-      if (cleanCity) whereClause = `(${whereClause}) AND upper(location_city) = '${cleanCity}'`;
-      const queryStr = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=100`;
-      const response = await fetch(BASE_URL + queryStr);
+      
+      const isLikelyAddress = /\d/.test(cleanSearch);
+      
+      let whereClause = isLikelyAddress 
+        ? `(upper(location_name) like '%${cleanSearch}%' OR upper(location_address) like '%${cleanSearch}%')`
+        : `upper(location_name) like '%${cleanSearch}%'`;
+        
+      if (cleanCity) whereClause += ` AND upper(location_city) = '${cleanCity}'`;
+      
+      const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=100`;
+      const response = await fetch(BASE_URL + query);
       const data = await response.json();
       const uniqueSpots = [];
       const seen = new Set();
@@ -259,7 +153,11 @@ const App = () => {
         if (!seen.has(id)) { seen.add(id); uniqueSpots.push(item); }
       });
       setResults(uniqueSpots);
-    } catch (err) { setError("Comptroller DB connection error."); } finally { setLoading(false); }
+    } catch (err) { 
+      setError("Comptroller DB connection error."); 
+    } finally { 
+      setLoading(false); 
+    }
   };
 
   const handleTopAccountsSearch = async (e) => {
@@ -272,26 +170,32 @@ const App = () => {
       const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
       const dateString = oneYearAgo.toISOString().split('T')[0] + "T00:00:00.000";
       const locationCondition = isZip ? `location_zip = '${input}'` : `upper(location_city) = '${input}'`;
-      const queryStr = `?$select=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
+      
+      const query = `?$select=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
                     `&$where=${locationCondition} AND ${DATE_FIELD} > '${dateString}'` +
                     `&$group=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number` +
-                    `&$order=annual_sales DESC&$limit=100`;
-      const response = await fetch(BASE_URL + queryStr);
+                    `&$order=annual_sales DESC&$limit=50`;
+      
+      const response = await fetch(BASE_URL + query);
       const data = await response.json();
       setTopAccounts(data.map(account => ({
         ...account,
         annual_sales: parseFloat(account.annual_sales),
         avg_monthly_volume: parseFloat(account.annual_sales) / (parseInt(account.months_count) || 12)
       })));
-    } catch (err) { setError("Ranking engine error."); } finally { setLoading(false); }
+    } catch (err) { 
+      setError("Ranking engine error."); 
+    } finally { 
+      setLoading(false); 
+    }
   };
 
   const analyzeLocation = async (establishment) => {
     setLoading(true); setAiResponse(null);
     try {
       const whereClause = `taxpayer_number = '${establishment.taxpayer_number}' AND location_number = '${establishment.location_number}'`;
-      const queryStr = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=12`;
-      const response = await fetch(BASE_URL + queryStr);
+      const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=12`;
+      const response = await fetch(BASE_URL + query);
       const history = await response.json();
       setSelectedEstablishment({ 
         info: establishment, 
@@ -304,7 +208,11 @@ const App = () => {
         }))
       });
       performIntelligenceLookup(establishment);
-    } catch (err) { setError(err.message); } finally { setLoading(false); }
+    } catch (err) { 
+      setError(err.message); 
+    } finally { 
+      setLoading(false); 
+    }
   };
 
   const aiContent = useMemo(() => {
@@ -341,13 +249,8 @@ const App = () => {
              </div>
           </div>
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Restaurant Intelligence</h1>
-              <span className="bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-[9px] px-2 py-0.5 rounded-full font-black tracking-widest uppercase h-fit mt-1">
-                {APP_VERSION}
-              </span>
-            </div>
-            <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Comptroller Scrape Engine</p>
+            <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Market Intelligence</h1>
+            <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Hospitality Analytics Engine</p>
           </div>
         </div>
         
@@ -405,7 +308,7 @@ const App = () => {
                 <button 
                   key={`${item.taxpayer_number}-${item.location_number}`} 
                   onClick={() => analyzeLocation(item)} 
-                  className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${isSelected(item) ? 'bg-indigo-500 border-indigo-400' : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'}`}
+                  className={`w-full text-left p-5 rounded-3xl border transition-all flex items-center justify-between group ${isSelected(item) ? 'bg-indigo-500 border-indigo-400 shadow-lg shadow-indigo-500/20' : 'bg-[#1E293B] border-slate-700 hover:border-slate-500'}`}
                 >
                   <div className="flex items-center gap-4 truncate">
                     {viewMode === 'top' && <span className={`text-[10px] font-black w-6 ${isSelected(item) ? 'text-slate-900' : 'text-slate-500'}`}>{idx + 1}</span>}
@@ -431,37 +334,18 @@ const App = () => {
 
         <div className="lg:col-span-8">
           {selectedEstablishment ? (
-            <div className="space-y-6">
+            <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
               <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2.5rem] border border-slate-700 shadow-2xl relative overflow-hidden">
                 <div className="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
                   <div>
                     <h2 className="text-3xl md:text-5xl font-black text-white tracking-tighter uppercase italic leading-none">{selectedEstablishment.info.location_name}</h2>
                     <p className="text-slate-400 flex items-center gap-2 mt-5 text-[11px] font-bold uppercase tracking-widest"><MapPin size={16} className="text-indigo-400" /> {selectedEstablishment.info.location_address}, {selectedEstablishment.info.location_city}</p>
                   </div>
-                  <div className="flex flex-col gap-3 shrink-0 min-w-[220px]">
-                    <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10">
-                      <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
-                      <p className="text-4xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
-                    </div>
-                    <button 
-                      onClick={() => saveToCloud(selectedEstablishment.info, stats)}
-                      disabled={saveStatus === 'saving'}
-                      className={`w-full py-3 rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all ${
-                        saveStatus === 'success' ? 'bg-emerald-500 text-white' : 
-                        saveStatus === 'error' ? 'bg-red-500 text-white' : 
-                        'bg-slate-700 hover:bg-slate-600 text-slate-300'
-                      }`}
-                    >
-                      {saveStatus === 'saving' ? <Loader2 className="animate-spin" size={14} /> : 
-                       saveStatus === 'success' ? <CheckCircle2 size={14} /> :
-                       <Database size={14} />}
-                      {saveStatus === 'saving' ? 'Pushing...' : 
-                       saveStatus === 'success' ? 'Synced to Cloud' :
-                       saveStatus === 'error' ? 'Error' : 'Push to Cloud Storage'}
-                    </button>
+                  <div className="bg-indigo-500 p-6 rounded-[2rem] shadow-xl shadow-indigo-500/20 border border-white/10 shrink-0 min-w-[220px]">
+                    <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
+                    <p className="text-4xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
                   </div>
                 </div>
-
                 <div className="bg-[#0F172A]/60 rounded-[2rem] border border-slate-700/50 p-6 md:p-8 mt-10 relative z-10">
                   <div className="flex items-center gap-3 mb-8">
                     <div className="bg-indigo-500 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20">
@@ -487,7 +371,7 @@ const App = () => {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700">
+                <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700 shadow-xl">
                   <div className="flex items-center gap-3 mb-6 font-black uppercase italic text-xs tracking-widest text-indigo-400"><Utensils size={16} /> Market Category</div>
                   <select className="w-full bg-[#0F172A] border border-slate-700 rounded-2xl p-4 text-[10px] font-black text-slate-200 uppercase italic outline-none mb-6 appearance-none cursor-pointer" value={venueType} onChange={(e) => setVenueType(e.target.value)}>
                     {Object.entries(VENUE_TYPES).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
@@ -512,97 +396,49 @@ const App = () => {
                     </div>
                   </div>
                 </div>
-                <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700">
+                <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700 shadow-xl overflow-hidden">
                     <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Alcohol Sales</h3>
-                    <div className="h-[240px] w-full">
+                    <div className="h-[220px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={selectedEstablishment.history} margin={{ left: -20, bottom: 20 }}>
+                            <BarChart data={selectedEstablishment.history} margin={{ left: -20, bottom: 0 }}>
                                 <CartesianGrid vertical={false} stroke="#ffffff05" />
                                 <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
                                 <YAxis tickFormatter={formatCurrency} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
-                                <Tooltip contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}} formatter={(value) => [formatCurrency(value), ""]} />
-                                <Legend verticalAlign="top" align="right" height={36} iconType="circle" wrapperStyle={{ fontSize: '9px', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: '-10px' }} />
-                                <Bar name="Liquor" dataKey="liquor" stackId="a" fill="#6366f1" />
-                                <Bar name="Beer" dataKey="beer" stackId="a" fill="#fbbf24" />
-                                <Bar name="Wine" dataKey="wine" stackId="a" fill="#ec4899" />
+                                <Tooltip contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}} cursor={{fill: '#6366f110'}} formatter={(value) => [formatCurrency(value), ""]} />
+                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" radius={[2, 2, 0, 0]} />
+                                <Bar dataKey="beer" stackId="a" fill="#fbbf24" radius={[0, 0, 0, 0]} />
+                                <Bar dataKey="wine" stackId="a" fill="#ec4899" radius={[0, 0, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
                 </div>
               </div>
-
-              {/* Account Notes Section */}
-              <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2.5rem] border border-slate-700 shadow-2xl">
-                <div className="flex items-center justify-between mb-8">
-                  <div className="flex items-center gap-3">
-                    <div className="bg-indigo-500 p-2.5 rounded-xl">
-                      <MessageSquare className="text-white" size={20} />
-                    </div>
-                    <h3 className="text-xl font-black text-white uppercase italic tracking-tighter">Activity Logs & Notes</h3>
-                  </div>
-                  <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-xl border border-slate-700">
-                    <Calendar size={14} className="text-slate-500" />
-                    <span className="text-[10px] font-black uppercase text-slate-400">
-                      {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="space-y-6">
-                  <div className="relative group">
-                    <textarea 
-                      placeholder="What happened when you stopped by today? Add visit details, contact info, or follow-up tasks..."
-                      className="w-full bg-[#0F172A] border border-slate-700 rounded-[2rem] p-6 text-sm text-white placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-indigo-500 min-h-[120px] transition-all resize-none"
-                      value={newNote}
-                      onChange={(e) => setNewNote(e.target.value)}
-                    />
-                    <button 
-                      onClick={addNote}
-                      disabled={!newNote.trim()}
-                      className="absolute right-4 bottom-4 bg-indigo-500 hover:bg-indigo-400 disabled:bg-slate-700 disabled:opacity-50 text-slate-900 p-3 rounded-2xl transition-all shadow-lg"
-                    >
-                      <Plus size={20} strokeWidth={3} />
-                    </button>
-                  </div>
-
-                  <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                    {notes.length === 0 ? (
-                      <div className="text-center py-12 bg-[#0F172A]/30 rounded-[2rem] border border-dashed border-slate-800">
-                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-600 italic">No notes logged for this account yet.</p>
-                      </div>
-                    ) : (
-                      notes.map((note) => (
-                        <div key={note.id} className="bg-[#0F172A]/50 p-6 rounded-[2rem] border border-slate-800/50 hover:border-slate-700 transition-all">
-                          <div className="flex justify-between items-start mb-3">
-                            <span className="text-[9px] font-black uppercase tracking-[0.2em] text-indigo-400 px-3 py-1 bg-indigo-500/10 rounded-full border border-indigo-500/20">
-                              {note.dateLabel || 'Log Entry'}
-                            </span>
-                          </div>
-                          <p className="text-slate-200 text-sm leading-relaxed font-medium">
-                            {note.text}
-                          </p>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-              </div>
             </div>
           ) : (
             <div className="h-[600px] flex flex-col items-center justify-center text-center bg-[#1E293B]/20 rounded-[3rem] border border-dashed border-slate-700">
-               <Search size={40} className="text-indigo-400 opacity-20 mb-4" />
+               <div className="bg-indigo-500/10 p-6 rounded-full mb-6">
+                 <Search size={40} className="text-indigo-400 opacity-40" />
+               </div>
                <h2 className="text-xl font-black text-white uppercase italic tracking-tighter">System Idle</h2>
-               <p className="text-slate-500 font-bold uppercase text-[10px] tracking-widest mt-2">Search Name/Address or run a City/Zip Ranking</p>
+               <p className="text-slate-500 font-bold uppercase text-[10px] tracking-widest mt-2 max-w-[250px]">
+                 Enter a business name or street address to start scraping the Texas Comptroller Database
+               </p>
             </div>
           )}
         </div>
       </main>
+      
+      {error && (
+        <div className="fixed bottom-8 left-1/2 -translate-x-1/2 bg-red-500/90 text-white px-6 py-3 rounded-2xl text-xs font-black uppercase tracking-widest shadow-2xl backdrop-blur-sm z-50">
+          {error}
+        </div>
+      )}
 
       <style>{`
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #6366f1; }
       `}</style>
     </div>
   );
