@@ -27,6 +27,7 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer
 } from 'recharts';
 
@@ -43,6 +44,9 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+
+// --- Version Control ---
+const APP_VERSION = "v1.1.1";
 
 // --- Firebase Initialization ---
 const firebaseConfig = JSON.parse(__firebase_config);
@@ -111,7 +115,6 @@ const App = () => {
     const accountId = `${selectedEstablishment.info.taxpayer_number}-${selectedEstablishment.info.location_number}`;
     const notesRef = collection(db, 'artifacts', appId, 'public', 'data', 'notes');
     
-    // We fetch all notes and filter in memory to comply with Rule 2 (No complex queries)
     const unsubscribe = onSnapshot(notesRef, (snapshot) => {
       const allNotes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       const accountNotes = allNotes
@@ -143,7 +146,7 @@ const App = () => {
            selectedEstablishment.info.location_number === item.location_number;
   };
 
-  // Push to Cloud (Firestore Implementation)
+  // Push to Cloud
   const saveToCloud = async (establishment, stats) => {
     if (!user) return;
     setSaveStatus('saving');
@@ -194,7 +197,7 @@ const App = () => {
   };
 
   const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
-    const apiKey = ""; // Environment provided
+    const apiKey = ""; 
     try {
       const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
         method: 'POST',
@@ -338,7 +341,12 @@ const App = () => {
              </div>
           </div>
           <div>
-            <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Restaurant Intelligence</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Restaurant Intelligence</h1>
+              <span className="bg-indigo-500/10 border border-indigo-500/30 text-indigo-400 text-[9px] px-2 py-0.5 rounded-full font-black tracking-widest uppercase h-fit mt-1">
+                {APP_VERSION}
+              </span>
+            </div>
             <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Comptroller Scrape Engine</p>
           </div>
         </div>
@@ -506,16 +514,17 @@ const App = () => {
                 </div>
                 <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700">
                     <h3 className="text-[10px] font-black uppercase italic tracking-widest text-white mb-8">Monthly Alcohol Sales</h3>
-                    <div className="h-[220px] w-full">
+                    <div className="h-[240px] w-full">
                         <ResponsiveContainer width="100%" height="100%">
-                            <BarChart data={selectedEstablishment.history} margin={{ left: -20 }}>
+                            <BarChart data={selectedEstablishment.history} margin={{ left: -20, bottom: 20 }}>
                                 <CartesianGrid vertical={false} stroke="#ffffff05" />
                                 <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
                                 <YAxis tickFormatter={formatCurrency} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
                                 <Tooltip contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}} formatter={(value) => [formatCurrency(value), ""]} />
-                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" />
-                                <Bar dataKey="beer" stackId="a" fill="#fbbf24" />
-                                <Bar dataKey="wine" stackId="a" fill="#ec4899" />
+                                <Legend verticalAlign="top" align="right" height={36} iconType="circle" wrapperStyle={{ fontSize: '9px', fontWeight: '900', textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: '-10px' }} />
+                                <Bar name="Liquor" dataKey="liquor" stackId="a" fill="#6366f1" />
+                                <Bar name="Beer" dataKey="beer" stackId="a" fill="#fbbf24" />
+                                <Bar name="Wine" dataKey="wine" stackId="a" fill="#ec4899" />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
