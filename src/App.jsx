@@ -25,8 +25,11 @@ import {
   ResponsiveContainer
 } from 'recharts';
 
-// The environment provides the API key via an empty string that is populated at runtime
-const API_KEY = "";
+/**
+ * API CONFIGURATION
+ * Integrated provided key for immediate deployment functionality.
+ */
+const API_KEY = "AIzaSyBmwwb-a_Ud2SCWut9Of2BG0980XXfZFzY";
 
 // Dataset Configuration
 const DATASET_ID = 'naix-2893';
@@ -92,17 +95,19 @@ const App = () => {
           tools: [{ "google_search": {} }]
         })
       });
+
       if (!response.ok) {
         if (retries > 0 && (response.status === 429 || response.status >= 500)) {
           await new Promise(resolve => setTimeout(resolve, delay));
           return callGeminiWithRetry(prompt, retries - 1, delay * 2);
         }
-        throw new Error(`API Error: ${response.status}`);
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.error?.message || `API Error: ${response.status}`);
       }
       const result = await response.json();
       return result.candidates?.[0]?.content?.parts?.[0]?.text;
     } catch (err) {
-      if (retries > 0) {
+      if (retries > 0 && err.message.includes('fetch')) {
         await new Promise(resolve => setTimeout(resolve, delay));
         return callGeminiWithRetry(prompt, retries - 1, delay * 2);
       }
@@ -249,7 +254,10 @@ const App = () => {
              </div>
           </div>
           <div>
-            <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Market Intelligence</h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Market Intelligence</h1>
+              <span className="bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 px-2 py-0.5 rounded text-[10px] font-black tracking-widest uppercase">v1.0.1</span>
+            </div>
             <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Hospitality Analytics Engine</p>
           </div>
         </div>
