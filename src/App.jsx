@@ -8,17 +8,17 @@ import {
   Loader2,
   Utensils,
   Trophy,
-  Building2,
   Sparkles,
   Target,
   UserCheck,
   Globe,
-  Settings,
-  X,
   TrendingUp,
   PieChart as PieIcon,
   Database,
-  CheckCircle2
+  CheckCircle2,
+  MessageSquare,
+  Calendar,
+  Plus
 } from 'lucide-react';
 import {
   BarChart,
@@ -30,19 +30,26 @@ import {
   ResponsiveContainer
 } from 'recharts';
 
-// Fallback for environment variables to support different build targets
-const getApiKey = () => {
-  try {
-    if (import.meta && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
-      return import.meta.env.VITE_GEMINI_API_KEY;
-    }
-    return "";
-  } catch (e) {
-    return "";
-  }
-};
+// Firebase Imports
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  addDoc, 
+  onSnapshot, 
+  query, 
+  serverTimestamp 
+} from 'firebase/firestore';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 
-const API_KEY = getApiKey();
+// --- Firebase Initialization ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'restaurant-intel-app';
 
 // Dataset Configuration
 const DATASET_ID = 'naix-2893';
@@ -62,6 +69,7 @@ const VENUE_TYPES = {
 };
 
 const App = () => {
+  const [user, setUser] = useState(null);
   const [viewMode, setViewMode] = useState('search'); 
   const [searchTerm, setSearchTerm] = useState('');
   const [cityFilter, setCityFilter] = useState('');
@@ -74,11 +82,46 @@ const App = () => {
   const [venueType, setVenueType] = useState('casual_dining');
   
   // Storage State
-  const [saveStatus, setSaveStatus] = useState('idle'); // idle, saving, success, error
+  const [saveStatus, setSaveStatus] = useState('idle');
+  const [notes, setNotes] = useState([]);
+  const [newNote, setNewNote] = useState('');
 
   // Intelligence Engine State
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
+
+  // 1. Auth Init
+  useEffect(() => {
+    const initAuth = async () => {
+      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+        await signInWithCustomToken(auth, __initial_auth_token);
+      } else {
+        await signInAnonymously(auth);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Fetch Notes for Selected Account
+  useEffect(() => {
+    if (!user || !selectedEstablishment) return;
+    
+    const accountId = `${selectedEstablishment.info.taxpayer_number}-${selectedEstablishment.info.location_number}`;
+    const notesRef = collection(db, 'artifacts', appId, 'public', 'data', 'notes');
+    
+    // We fetch all notes and filter in memory to comply with Rule 2 (No complex queries)
+    const unsubscribe = onSnapshot(notesRef, (snapshot) => {
+      const allNotes = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const accountNotes = allNotes
+        .filter(n => n.accountId === accountId)
+        .sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      setNotes(accountNotes);
+    }, (err) => console.error("Notes fetch error:", err));
+
+    return () => unsubscribe();
+  }, [user, selectedEstablishment]);
 
   const formatCurrency = (val) => {
     const num = parseFloat(val);
@@ -100,29 +143,27 @@ const App = () => {
            selectedEstablishment.info.location_number === item.location_number;
   };
 
-  // Neon Storage Integration Function
-  const saveToNeon = async (establishment, stats) => {
+  // Push to Cloud (Firestore Implementation)
+  const saveToCloud = async (establishment, stats) => {
+    if (!user) return;
     setSaveStatus('saving');
     try {
-      // This calls the bridge we created in api/save-scrape.js
-      const response = await fetch('/api/save-scrape', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: establishment.location_name,
-          address: establishment.location_address,
-          city: establishment.location_city,
-          taxpayer: establishment.taxpayer_name,
-          alc_avg: stats.averageAlcohol,
-          est_total: stats.estimatedTotalAvg,
-          venue_type: venueType
-        })
+      const accountId = `${establishment.taxpayer_number}-${establishment.location_number}`;
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'saved_accounts', accountId);
+      
+      await setDoc(docRef, {
+        name: establishment.location_name,
+        address: establishment.location_address,
+        city: establishment.location_city,
+        taxpayer: establishment.taxpayer_name,
+        alc_avg: stats.averageAlcohol,
+        est_total: stats.estimatedTotalAvg,
+        venue_type: venueType,
+        last_updated: serverTimestamp(),
+        saved_by: user.uid
       });
 
-      if (!response.ok) throw new Error('Database write failed');
-      
       setSaveStatus('success');
-      // Reset button after 3 seconds
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (err) {
       console.error("Storage Error:", err);
@@ -131,10 +172,31 @@ const App = () => {
     }
   };
 
-  const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
-    if (!API_KEY) throw new Error("API Key missing.");
+  const addNote = async () => {
+    if (!user || !newNote.trim() || !selectedEstablishment) return;
+    
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
+      const accountId = `${selectedEstablishment.info.taxpayer_number}-${selectedEstablishment.info.location_number}`;
+      const notesRef = collection(db, 'artifacts', appId, 'public', 'data', 'notes');
+      
+      await addDoc(notesRef, {
+        accountId,
+        text: newNote,
+        userId: user.uid,
+        createdAt: serverTimestamp(),
+        dateLabel: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+      });
+      
+      setNewNote('');
+    } catch (err) {
+      console.error("Error adding note:", err);
+    }
+  };
+
+  const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
+    const apiKey = ""; // Environment provided
+    try {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -182,17 +244,10 @@ const App = () => {
     try {
       const cleanSearch = searchTerm.trim().toUpperCase();
       const cleanCity = cityFilter.trim().toUpperCase();
-      
-      const isLikelyAddress = /\d/.test(cleanSearch);
-      
-      let whereClause = isLikelyAddress 
-        ? `(upper(location_name) like '%${cleanSearch}%' OR upper(location_address) like '%${cleanSearch}%')`
-        : `upper(location_name) like '%${cleanSearch}%'`;
-        
-      if (cleanCity) whereClause += ` AND upper(location_city) = '${cleanCity}'`;
-      
-      const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=100`;
-      const response = await fetch(BASE_URL + query);
+      let whereClause = `upper(location_name) like '%${cleanSearch}%' OR upper(location_address) like '%${cleanSearch}%'`;
+      if (cleanCity) whereClause = `(${whereClause}) AND upper(location_city) = '${cleanCity}'`;
+      const queryStr = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=100`;
+      const response = await fetch(BASE_URL + queryStr);
       const data = await response.json();
       const uniqueSpots = [];
       const seen = new Set();
@@ -214,11 +269,11 @@ const App = () => {
       const oneYearAgo = new Date(); oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
       const dateString = oneYearAgo.toISOString().split('T')[0] + "T00:00:00.000";
       const locationCondition = isZip ? `location_zip = '${input}'` : `upper(location_city) = '${input}'`;
-      const query = `?$select=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
+      const queryStr = `?$select=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number, sum(${TOTAL_FIELD}) as annual_sales, count(${TOTAL_FIELD}) as months_count` +
                     `&$where=${locationCondition} AND ${DATE_FIELD} > '${dateString}'` +
                     `&$group=location_name, location_address, location_city, taxpayer_name, taxpayer_number, location_number` +
                     `&$order=annual_sales DESC&$limit=100`;
-      const response = await fetch(BASE_URL + query);
+      const response = await fetch(BASE_URL + queryStr);
       const data = await response.json();
       setTopAccounts(data.map(account => ({
         ...account,
@@ -232,8 +287,8 @@ const App = () => {
     setLoading(true); setAiResponse(null);
     try {
       const whereClause = `taxpayer_number = '${establishment.taxpayer_number}' AND location_number = '${establishment.location_number}'`;
-      const query = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=12`;
-      const response = await fetch(BASE_URL + query);
+      const queryStr = `?$where=${encodeURIComponent(whereClause)}&$order=${DATE_FIELD} DESC&$limit=12`;
+      const response = await fetch(BASE_URL + queryStr);
       const history = await response.json();
       setSelectedEstablishment({ 
         info: establishment, 
@@ -283,8 +338,8 @@ const App = () => {
              </div>
           </div>
           <div>
-            <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Restaurant Scraper</h1>
-            <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Comptroller Intelligence</p>
+            <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Restaurant Intelligence</h1>
+            <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Comptroller Scrape Engine</p>
           </div>
         </div>
         
@@ -380,9 +435,8 @@ const App = () => {
                       <p className="text-[9px] font-black text-indigo-950 uppercase tracking-widest mb-1 flex items-center gap-2"><TrendingUp size={12} /> Est. Total GPV</p>
                       <p className="text-4xl font-black text-white italic tracking-tighter leading-none">{formatCurrency(stats.estimatedTotalAvg)}</p>
                     </div>
-                    {/* Database Save Button */}
                     <button 
-                      onClick={() => saveToNeon(selectedEstablishment.info, stats)}
+                      onClick={() => saveToCloud(selectedEstablishment.info, stats)}
                       disabled={saveStatus === 'saving'}
                       className={`w-full py-3 rounded-2xl flex items-center justify-center gap-2 text-[10px] font-black uppercase tracking-widest transition-all ${
                         saveStatus === 'success' ? 'bg-emerald-500 text-white' : 
@@ -393,12 +447,13 @@ const App = () => {
                       {saveStatus === 'saving' ? <Loader2 className="animate-spin" size={14} /> : 
                        saveStatus === 'success' ? <CheckCircle2 size={14} /> :
                        <Database size={14} />}
-                      {saveStatus === 'saving' ? 'Archiving...' : 
-                       saveStatus === 'success' ? 'Saved to Neon' :
-                       saveStatus === 'error' ? 'Storage Error' : 'Push to Storage'}
+                      {saveStatus === 'saving' ? 'Pushing...' : 
+                       saveStatus === 'success' ? 'Synced to Cloud' :
+                       saveStatus === 'error' ? 'Error' : 'Push to Cloud Storage'}
                     </button>
                   </div>
                 </div>
+
                 <div className="bg-[#0F172A]/60 rounded-[2rem] border border-slate-700/50 p-6 md:p-8 mt-10 relative z-10">
                   <div className="flex items-center gap-3 mb-8">
                     <div className="bg-indigo-500 p-2.5 rounded-xl shadow-lg shadow-indigo-500/20">
@@ -466,6 +521,63 @@ const App = () => {
                     </div>
                 </div>
               </div>
+
+              {/* Account Notes Section */}
+              <div className="bg-[#1E293B] p-8 md:p-10 rounded-[2.5rem] border border-slate-700 shadow-2xl">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-3">
+                    <div className="bg-indigo-500 p-2.5 rounded-xl">
+                      <MessageSquare className="text-white" size={20} />
+                    </div>
+                    <h3 className="text-xl font-black text-white uppercase italic tracking-tighter">Activity Logs & Notes</h3>
+                  </div>
+                  <div className="flex items-center gap-2 bg-[#0F172A] px-4 py-2 rounded-xl border border-slate-700">
+                    <Calendar size={14} className="text-slate-500" />
+                    <span className="text-[10px] font-black uppercase text-slate-400">
+                      {new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="space-y-6">
+                  <div className="relative group">
+                    <textarea 
+                      placeholder="What happened when you stopped by today? Add visit details, contact info, or follow-up tasks..."
+                      className="w-full bg-[#0F172A] border border-slate-700 rounded-[2rem] p-6 text-sm text-white placeholder:text-slate-600 outline-none focus:ring-2 focus:ring-indigo-500 min-h-[120px] transition-all resize-none"
+                      value={newNote}
+                      onChange={(e) => setNewNote(e.target.value)}
+                    />
+                    <button 
+                      onClick={addNote}
+                      disabled={!newNote.trim()}
+                      className="absolute right-4 bottom-4 bg-indigo-500 hover:bg-indigo-400 disabled:bg-slate-700 disabled:opacity-50 text-slate-900 p-3 rounded-2xl transition-all shadow-lg"
+                    >
+                      <Plus size={20} strokeWidth={3} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                    {notes.length === 0 ? (
+                      <div className="text-center py-12 bg-[#0F172A]/30 rounded-[2rem] border border-dashed border-slate-800">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-slate-600 italic">No notes logged for this account yet.</p>
+                      </div>
+                    ) : (
+                      notes.map((note) => (
+                        <div key={note.id} className="bg-[#0F172A]/50 p-6 rounded-[2rem] border border-slate-800/50 hover:border-slate-700 transition-all">
+                          <div className="flex justify-between items-start mb-3">
+                            <span className="text-[9px] font-black uppercase tracking-[0.2em] text-indigo-400 px-3 py-1 bg-indigo-500/10 rounded-full border border-indigo-500/20">
+                              {note.dateLabel || 'Log Entry'}
+                            </span>
+                          </div>
+                          <p className="text-slate-200 text-sm leading-relaxed font-medium">
+                            {note.text}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           ) : (
             <div className="h-[600px] flex flex-col items-center justify-center text-center bg-[#1E293B]/20 rounded-[3rem] border border-dashed border-slate-700">
@@ -476,6 +588,13 @@ const App = () => {
           )}
         </div>
       </main>
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
+      `}</style>
     </div>
   );
 };
