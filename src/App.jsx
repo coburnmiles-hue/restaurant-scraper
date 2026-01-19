@@ -13,7 +13,10 @@ import {
   UserCheck,
   Globe,
   TrendingUp,
-  PieChart as PieIcon
+  PieChart as PieIcon,
+  MessageSquare,
+  Clock,
+  Plus
 } from 'lucide-react';
 import {
   BarChart,
@@ -22,14 +25,25 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
+  Legend,
   ResponsiveContainer
 } from 'recharts';
 
 /**
- * API CONFIGURATION
- * Integrated provided key for immediate deployment functionality.
+ * SECURITY UPDATE:
+ * Using a safer check for environment variables to avoid build-time errors.
+ * Make sure VITE_GEMINI_API_KEY is set in your Vercel Project Settings.
  */
-const API_KEY = "AIzaSyBmwwb-a_Ud2SCWut9Of2BG0980XXfZFzY";
+const getApiKey = () => {
+  try {
+    return import.meta.env.VITE_GEMINI_API_KEY || "";
+  } catch (e) {
+    // Fallback for environments where import.meta is restricted
+    return "";
+  }
+};
+
+const API_KEY = getApiKey();
 
 // Dataset Configuration
 const DATASET_ID = 'naix-2893';
@@ -64,6 +78,10 @@ const App = () => {
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
 
+  // Notes State
+  const [notes, setNotes] = useState([]);
+  const [currentNote, setCurrentNote] = useState('');
+
   const formatCurrency = (val) => {
     const num = parseFloat(val);
     if (isNaN(num)) return '$0';
@@ -84,14 +102,37 @@ const App = () => {
            selectedEstablishment.info.location_number === item.location_number;
   };
 
+  const handleAddNote = () => {
+    if (!currentNote.trim()) return;
+    const now = new Date();
+    const timestamp = now.toLocaleString('en-US', { 
+      month: 'short', 
+      day: 'numeric', 
+      year: 'numeric', 
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    const newNote = {
+      id: Date.now(),
+      text: currentNote,
+      time: timestamp
+    };
+    setNotes([newNote, ...notes]);
+    setCurrentNote('');
+  };
+
   const callGeminiWithRetry = async (prompt, retries = 5, delay = 1000) => {
+    const key = getApiKey();
+    if (!key) {
+      throw new Error("Missing API Key. Please configure VITE_GEMINI_API_KEY in Vercel.");
+    }
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${API_KEY}`, {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          systemInstruction: { parts: [{ text: "You are a business intelligence assistant specialized in the Texas hospitality market. Search for real-world ownership data." }] },
+          systemInstruction: { parts: [{ text: "You are a business intelligence assistant specialized in the Texas hospitality market." }] },
           tools: [{ "google_search": {} }]
         })
       });
@@ -256,7 +297,7 @@ const App = () => {
           <div>
             <div className="flex items-center gap-3">
               <h1 className="text-4xl font-black text-white tracking-tighter uppercase italic leading-none">Market Intelligence</h1>
-              <span className="bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 px-2 py-0.5 rounded text-[10px] font-black tracking-widest uppercase">v1.0.1</span>
+              <span className="bg-indigo-500/20 border border-indigo-500/30 text-indigo-400 px-2 py-0.5 rounded text-[10px] font-black tracking-widest uppercase">v1.0.2</span>
             </div>
             <p className="text-slate-500 font-bold uppercase tracking-[0.2em] text-[9px] mt-1">TX Hospitality Analytics Engine</p>
           </div>
@@ -413,12 +454,60 @@ const App = () => {
                                 <XAxis dataKey={DATE_FIELD} tickFormatter={formatDate} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
                                 <YAxis tickFormatter={formatCurrency} tick={{fontSize: 7, fill: '#475569'}} axisLine={false} tickLine={false} />
                                 <Tooltip contentStyle={{backgroundColor: '#0F172A', border: 'none', borderRadius: '12px', fontSize: '10px'}} cursor={{fill: '#6366f110'}} formatter={(value) => [formatCurrency(value), ""]} />
-                                <Bar dataKey="liquor" stackId="a" fill="#6366f1" radius={[2, 2, 0, 0]} />
-                                <Bar dataKey="beer" stackId="a" fill="#fbbf24" radius={[0, 0, 0, 0]} />
-                                <Bar dataKey="wine" stackId="a" fill="#ec4899" radius={[0, 0, 0, 0]} />
+                                <Legend iconType="circle" wrapperStyle={{ fontSize: '9px', textTransform: 'uppercase', fontWeight: 'bold', paddingTop: '10px' }} />
+                                <Bar name="Liquor" dataKey="liquor" stackId="a" fill="#6366f1" radius={[2, 2, 0, 0]} />
+                                <Bar name="Beer" dataKey="beer" stackId="a" fill="#fbbf24" radius={[0, 0, 0, 0]} />
+                                <Bar name="Wine" dataKey="wine" stackId="a" fill="#ec4899" radius={[0, 0, 0, 0]} />
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
+                </div>
+              </div>
+
+              {/* CRM / Notes Section */}
+              <div className="bg-[#1E293B] p-8 rounded-[2.5rem] border border-slate-700 shadow-xl">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="bg-indigo-500 p-2 rounded-xl">
+                    <MessageSquare size={18} className="text-white" />
+                  </div>
+                  <h3 className="text-[11px] font-black uppercase italic tracking-widest text-white">Prospecting & Sales Notes</h3>
+                </div>
+                
+                <div className="flex flex-col gap-4">
+                  <div className="relative group">
+                    <textarea 
+                      placeholder="Type a meeting note, follow-up status, or general intelligence here..."
+                      className="w-full bg-[#0F172A] border border-slate-700 rounded-3xl p-6 text-[11px] font-bold text-slate-200 outline-none focus:ring-2 focus:ring-indigo-500 transition-all min-h-[100px] resize-none"
+                      value={currentNote}
+                      onChange={(e) => setCurrentNote(e.target.value)}
+                    />
+                    <button 
+                      onClick={handleAddNote}
+                      disabled={!currentNote.trim()}
+                      className="absolute bottom-4 right-4 bg-indigo-500 hover:bg-indigo-400 disabled:opacity-30 disabled:hover:bg-indigo-500 text-white p-3 rounded-2xl shadow-xl transition-all"
+                    >
+                      <Plus size={20} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-3 mt-4 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                    {notes.length === 0 ? (
+                      <div className="text-center py-10 opacity-20 flex flex-col items-center">
+                        <MessageSquare size={32} className="mb-2" />
+                        <p className="text-[10px] font-black uppercase tracking-widest">No Notes Logged Yet</p>
+                      </div>
+                    ) : (
+                      notes.map(note => (
+                        <div key={note.id} className="bg-[#0F172A]/40 border border-slate-800 p-5 rounded-3xl animate-in fade-in slide-in-from-top-2">
+                          <div className="flex items-center gap-2 mb-3 text-indigo-400">
+                            <Clock size={12} />
+                            <span className="text-[9px] font-black uppercase tracking-widest">{note.time}</span>
+                          </div>
+                          <p className="text-[12px] text-slate-300 font-bold leading-relaxed">{note.text}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
